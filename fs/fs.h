@@ -29,8 +29,13 @@ int fs_exists(const char *path);
 int fs_write(const char *path, const char *data, uint32_t length);
 int fs_read(const char *path, char *buffer, uint32_t buffer_size, uint32_t *bytes_read);
 int fs_install_executable(const char *path, const void *data, uint32_t size);
+int fs_copy(const char *src_path, const char *dst_path);
+int fs_move(const char *src_path, const char *dst_path);
 
 void fs_list_directory(const char *path);
 const char *fs_base_name(const char *path);
+
+int fs_check(void);
+int fs_selftest(void);
 
 #endif

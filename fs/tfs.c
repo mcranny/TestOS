@@ -1,6 +1,7 @@
 #include "tfs.h"
 #include "memory.h"
 #include "terminal.h"
+#include "log.h"
 
 #define TFS_MAGIC           0x31534654U /* 'TFS1' LE */
 #define TFS_VERSION         1U
@@ -638,6 +639,41 @@ int tfs_remove(const char *path)
     return tfs_clear_inode(index);
 }
 
+int tfs_rename(const char *old_path, const char *new_path)
+{
+    uint32_t index;
+    tfs_inode_t inode;
+
+    if (!tfs_mounted || old_path == NULL || new_path == NULL)
+    {
+        return 0;
+    }
+
+    if (tfs_string_equals(old_path, new_path))
+    {
+        return 1;
+    }
+
+    if (!tfs_find_inode(old_path, &index, &inode))
+    {
+        return 0;
+    }
+
+    if (inode.type == (uint32_t)FS_ENTRY_DIRECTORY)
+    {
+        /* Directory rename would leave child paths stale. */
+        return 0;
+    }
+
+    if (tfs_find_inode(new_path, NULL, NULL))
+    {
+        return 0;
+    }
+
+    tfs_path_copy(inode.path, new_path, FS_MAX_PATH);
+    return tfs_store_inode(index, &inode);
+}
+
 int tfs_write(
     const char *path,
     const void *data,
@@ -875,4 +911,132 @@ void tfs_list_directory(const char *path)
 
         terminal_putchar('\n');
     }
+}
+
+int tfs_check(void)
+{
+    uint8_t expected[TFS_BITMAP_BLOCKS * TFS_SECTOR_SIZE];
+    uint32_t index;
+    uint32_t bit;
+    uint32_t total_data;
+    uint32_t errors = 0;
+    tfs_inode_t inode;
+
+    if (!tfs_mounted)
+    {
+        klog(KLOG_ERROR, "FS", "tfs_check: not mounted");
+        return -1;
+    }
+
+    total_data = tfs_data_block_count();
+    memset(expected, 0, sizeof(expected));
+
+    for (index = 0; index < tfs_sb.inode_count; index++)
+    {
+        if (!tfs_load_inode(index, &inode))
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: inode read failed");
+            return -1;
+        }
+
+        if (!inode.used)
+        {
+            continue;
+        }
+
+        if (inode.type == (uint32_t)FS_ENTRY_DIRECTORY)
+        {
+            if (inode.block_count != 0 || inode.size != 0)
+            {
+                klog(KLOG_ERROR, "FS", "tfs_check: directory has data blocks");
+                errors++;
+            }
+            continue;
+        }
+
+        if (inode.type != (uint32_t)FS_ENTRY_FILE)
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: unknown inode type");
+            errors++;
+            continue;
+        }
+
+        if (inode.block_count == 0)
+        {
+            if (inode.size != 0 || inode.start_block != 0)
+            {
+                klog(KLOG_ERROR, "FS", "tfs_check: empty file metadata mismatch");
+                errors++;
+            }
+            continue;
+        }
+
+        if (inode.start_block < tfs_sb.data_lba)
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: start_block below data region");
+            errors++;
+            continue;
+        }
+
+        bit = inode.start_block - tfs_sb.data_lba;
+
+        if (bit + inode.block_count > total_data)
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: blocks out of range");
+            errors++;
+            continue;
+        }
+
+        if (inode.size > inode.block_count * tfs_sb.block_size)
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: size exceeds allocation");
+            errors++;
+        }
+
+        {
+            uint32_t offset;
+
+            for (offset = 0; offset < inode.block_count; offset++)
+            {
+                uint32_t data_bit = bit + offset;
+                uint32_t byte = data_bit / 8U;
+                uint8_t mask = (uint8_t)(1U << (data_bit % 8U));
+
+                if (expected[byte] & mask)
+                {
+                    klog(KLOG_ERROR, "FS", "tfs_check: cross-linked block");
+                    errors++;
+                }
+
+                expected[byte] |= mask;
+            }
+        }
+    }
+
+    for (bit = 0; bit < total_data; bit++)
+    {
+        int on_disk = tfs_bitmap_get(bit);
+        int expected_bit = (expected[bit / 8U] >> (bit % 8U)) & 1;
+
+        if (on_disk && !expected_bit)
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: leaked block");
+            errors++;
+        }
+
+        if (!on_disk && expected_bit)
+        {
+            klog(KLOG_ERROR, "FS", "tfs_check: allocated block not marked");
+            errors++;
+        }
+    }
+
+    if (errors == 0)
+    {
+        klog(KLOG_INFO, "FS", "tfs_check: filesystem consistent");
+        return 0;
+    }
+
+    klog_uint(KLOG_ERROR, "FS", "tfs_check errors=", errors);
+    return -(int)errors;
 }

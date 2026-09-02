@@ -184,6 +184,7 @@ address_space_t *address_space_create(void)
 void address_space_destroy(address_space_t *address_space)
 {
     uint32_t table_index;
+    uint32_t page_index;
 
     if (address_space == NULL || address_space == &kernel_address_space)
     {
@@ -193,10 +194,27 @@ void address_space_destroy(address_space_t *address_space)
     for (table_index = 0; table_index < PAGE_TABLE_COUNT; table_index++)
     {
         uint32_t entry = address_space->page_directory[table_index];
+        page_table_entry_t *table;
 
         if ((entry & PAGE_PRESENT) == 0)
         {
             continue;
+        }
+
+        table = (page_table_entry_t *)(entry & 0xFFFFF000U);
+
+        /*
+         * Free frames that belong to this address space (PAGE_USER). Kernel
+         * identity mappings were copied into these tables and must stay.
+         */
+        for (page_index = 0; page_index < PAGE_TABLE_ENTRIES; page_index++)
+        {
+            uint32_t pte = table[page_index];
+
+            if ((pte & PAGE_PRESENT) != 0 && (pte & PAGE_USER) != 0)
+            {
+                pmm_free_frame(pte & 0xFFFFF000U);
+            }
         }
 
         pmm_free_frame(entry & 0xFFFFF000U);

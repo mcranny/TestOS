@@ -7,6 +7,7 @@
 #define PROCESS_STACK_SIZE 32768
 #define PROCESS_TIME_SLICE 5
 #define PROCESS_MAX          16
+#define PROCESS_STACK_CANARY 0xA5A5C0DEU
 
 #define PROCESS_EXIT_NONE 0x7FFFFFFF
 
@@ -41,6 +42,7 @@ typedef struct process
     uint32_t time_slice;
     uint32_t wake_tick;
     struct process *next;
+    struct process *reap_next;
 } process_t;
 
 void scheduler_initialize(void);
@@ -66,11 +68,13 @@ process_t *process_create_user(
 void process_exit(int32_t status);
 void process_handle_exception(void *frame);
 void exception_reschedule(void);
+void process_reap_terminated(void);
 
 process_t *process_get_current(void);
 uint32_t process_get_current_pid(void);
 process_t *process_find_by_pid(uint32_t pid);
 int process_terminate(uint32_t pid);
 void process_list(void);
+int process_check_stack_canary(process_t *process);
 
 #endif

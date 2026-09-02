@@ -1,6 +1,8 @@
 #include "process.h"
+#include "config.h"
 #include "gdt.h"
 #include "heap.h"
+#include "log.h"
 #include "memory.h"
 #include "paging.h"
 #include "terminal.h"
@@ -16,10 +18,85 @@ extern void process_enter_user_mode(uint32_t eip, uint32_t user_stack);
 
 static process_t *ready_head;
 static process_t *ready_tail;
+static process_t *terminated_head;
 static process_t *current_process;
 static process_t *idle_process;
 static process_t *process_registry[PROCESS_MAX];
 static uint32_t next_pid = 1;
+
+static int process_is_registered(process_t *process)
+{
+    uint32_t index;
+
+    if (process == NULL)
+    {
+        return 0;
+    }
+
+    for (index = 0; index < PROCESS_MAX; index++)
+    {
+        if (process_registry[index] == process)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int process_transition_allowed(
+    process_state_t old_state,
+    process_state_t new_state
+)
+{
+    if (old_state == new_state)
+    {
+        return 1;
+    }
+
+    if (new_state == PROCESS_TERMINATED)
+    {
+        return old_state != PROCESS_TERMINATED;
+    }
+
+    if (old_state == PROCESS_TERMINATED)
+    {
+        return 0;
+    }
+
+    switch (old_state)
+    {
+        case PROCESS_READY:
+            return new_state == PROCESS_RUNNING;
+        case PROCESS_RUNNING:
+            return new_state == PROCESS_READY || new_state == PROCESS_BLOCKED;
+        case PROCESS_BLOCKED:
+            return new_state == PROCESS_READY;
+        default:
+            return 0;
+    }
+}
+
+static void process_set_state(process_t *process, process_state_t new_state)
+{
+    if (process == NULL)
+    {
+        return;
+    }
+
+    if (!process_transition_allowed(process->state, new_state))
+    {
+        klog(KLOG_ERROR, "PROC", "Invalid process state transition");
+        klog_uint(KLOG_ERROR, "PROC", "pid=", process->pid);
+#if TESTOS_DEBUG
+        panic("PROC", "Invalid process state transition");
+#else
+        return;
+#endif
+    }
+
+    process->state = new_state;
+}
 
 static void process_register(process_t *process)
 {
@@ -30,6 +107,20 @@ static void process_register(process_t *process)
         if (process_registry[index] == NULL)
         {
             process_registry[index] = process;
+            return;
+        }
+    }
+}
+
+static void process_unregister(process_t *process)
+{
+    uint32_t index;
+
+    for (index = 0; index < PROCESS_MAX; index++)
+    {
+        if (process_registry[index] == process)
+        {
+            process_registry[index] = NULL;
             return;
         }
     }
@@ -64,6 +155,207 @@ static void process_remove_from_ready(process_t *target)
 
         previous = process;
         process = process->next;
+    }
+}
+
+static void process_enqueue_terminated(process_t *process)
+{
+    if (process == NULL || process == idle_process)
+    {
+        return;
+    }
+
+    process->reap_next = terminated_head;
+    terminated_head = process;
+}
+
+static int process_esp_in_stack(process_t *process)
+{
+    uint32_t stack_low;
+    uint32_t stack_high;
+
+    if (process == NULL || process->kernel_stack_top == 0)
+    {
+        return 0;
+    }
+
+    stack_low = process->kernel_stack_top + sizeof(uint32_t);
+    stack_high = process->kernel_stack_top + PROCESS_STACK_SIZE;
+
+    return process->context.kernel_esp >= stack_low &&
+           process->context.kernel_esp <= stack_high;
+}
+
+int process_check_stack_canary(process_t *process)
+{
+    uint32_t canary;
+
+    if (process == NULL || process->kernel_stack_top == 0)
+    {
+        return 0;
+    }
+
+    canary = *(volatile uint32_t *)process->kernel_stack_top;
+    return canary == PROCESS_STACK_CANARY;
+}
+
+static void process_verify_stack_or_panic(process_t *process, const char *when)
+{
+    (void)when;
+
+    if (process == NULL || process->kernel_stack_top == 0)
+    {
+        return;
+    }
+
+    if (!process_check_stack_canary(process))
+    {
+        klog(KLOG_PANIC, "PROC", "KERNEL STACK CORRUPTION");
+        klog_uint(KLOG_PANIC, "PROC", "PID: ", process->pid);
+        klog(KLOG_PANIC, "PROC", process->name);
+        panic("PROC", "KERNEL STACK CORRUPTION");
+    }
+}
+
+static int process_is_schedulable(process_t *process)
+{
+    if (process == NULL)
+    {
+        return 0;
+    }
+
+    if (!process_is_registered(process))
+    {
+        klog(KLOG_ERROR, "PROC", "Process pointer not in registry");
+        return 0;
+    }
+
+    if (process->state == PROCESS_TERMINATED)
+    {
+        return 0;
+    }
+
+    if (!address_space_is_valid(process->address_space))
+    {
+        klog(KLOG_ERROR, "PROC", "Invalid address space");
+        return 0;
+    }
+
+    if (process->kernel_stack_top == 0 || process->context.kernel_esp == 0)
+    {
+        klog(KLOG_ERROR, "PROC", "Invalid kernel stack");
+        return 0;
+    }
+
+    if (!process_esp_in_stack(process))
+    {
+        klog(KLOG_ERROR, "PROC", "Kernel ESP outside stack");
+        return 0;
+    }
+
+    if (!process_check_stack_canary(process))
+    {
+        process_verify_stack_or_panic(process, "schedulable");
+        return 0;
+    }
+
+    return 1;
+}
+
+static void process_remove_from_terminated(process_t *target)
+{
+    process_t *process = terminated_head;
+    process_t *previous = NULL;
+
+    while (process != NULL)
+    {
+        if (process == target)
+        {
+            if (previous == NULL)
+            {
+                terminated_head = process->reap_next;
+            }
+            else
+            {
+                previous->reap_next = process->reap_next;
+            }
+
+            process->reap_next = NULL;
+            return;
+        }
+
+        previous = process;
+        process = process->reap_next;
+    }
+}
+
+/*
+ * Free all resources owned by a terminated process. Must not be current
+ * (may free the kernel stack we would still be running on).
+ */
+static void process_free(process_t *process)
+{
+    address_space_t *kernel_as = paging_get_kernel_address_space();
+
+    if (process == NULL || process == idle_process || process == current_process)
+    {
+        return;
+    }
+
+    process_remove_from_ready(process);
+    process_remove_from_terminated(process);
+    process_unregister(process);
+
+    if (process->is_user &&
+        process->address_space != NULL &&
+        process->address_space != kernel_as)
+    {
+        address_space_destroy(process->address_space);
+        process->address_space = NULL;
+    }
+
+    if (process->kernel_stack_top != 0)
+    {
+        kfree((void *)process->kernel_stack_top);
+        process->kernel_stack_top = 0;
+        process->context.kernel_esp = 0;
+    }
+
+    process->reap_next = NULL;
+    kfree(process);
+}
+
+void process_reap_terminated(void)
+{
+    process_t *process;
+    process_t *next;
+
+    if (kernel_is_panicked())
+    {
+        return;
+    }
+
+    process = terminated_head;
+    terminated_head = NULL;
+
+    while (process != NULL)
+    {
+        next = process->reap_next;
+        process->reap_next = NULL;
+
+        if (process != current_process &&
+            process != idle_process &&
+            process->state == PROCESS_TERMINATED)
+        {
+            process_free(process);
+        }
+        else if (process->state == PROCESS_TERMINATED)
+        {
+            process->reap_next = terminated_head;
+            terminated_head = process;
+        }
+
+        process = next;
     }
 }
 
@@ -104,6 +396,7 @@ static void idle_process_entry(void)
 {
     for (;;)
     {
+        process_reap_terminated();
         __asm__ volatile ("hlt");
     }
 }
@@ -163,6 +456,8 @@ static void process_prepare_kernel_stack(process_t *process, process_entry_t ent
         return;
     }
 
+    *(uint32_t *)process->kernel_stack_top = PROCESS_STACK_CANARY;
+
     stack = (uint32_t *)(process->kernel_stack_top + PROCESS_STACK_SIZE);
     *--stack = (uint32_t)entry;
     *--stack = 0;
@@ -198,6 +493,7 @@ static process_t *process_alloc(
     process->is_user = 0;
     process->time_slice = PROCESS_TIME_SLICE;
     process->next = NULL;
+    process->reap_next = NULL;
     process->user_entry = 0;
     process->user_stack_top = 0;
     process->exit_status = PROCESS_EXIT_NONE;
@@ -216,12 +512,31 @@ static process_t *process_alloc(
     return process;
 }
 
+static void process_mark_terminated(process_t *process, int32_t status)
+{
+    if (process == NULL || process == idle_process)
+    {
+        return;
+    }
+
+    if (process->state == PROCESS_TERMINATED)
+    {
+        return;
+    }
+
+    process->exit_status = status;
+    process_set_state(process, PROCESS_TERMINATED);
+    process_remove_from_ready(process);
+    process_enqueue_terminated(process);
+}
+
 void scheduler_initialize(void)
 {
     uint32_t index;
 
     ready_head = NULL;
     ready_tail = NULL;
+    terminated_head = NULL;
     current_process = NULL;
 
     for (index = 0; index < PROCESS_MAX; index++)
@@ -248,7 +563,11 @@ process_t *process_create_kernel(
     uint32_t parent_pid
 )
 {
-    process_t *process = process_alloc(
+    process_t *process;
+
+    process_reap_terminated();
+
+    process = process_alloc(
         name,
         parent_pid,
         paging_get_kernel_address_space()
@@ -263,6 +582,7 @@ process_t *process_create_kernel(
 
     if (process->context.kernel_esp == 0)
     {
+        process_unregister(process);
         kfree(process);
         return NULL;
     }
@@ -279,7 +599,11 @@ process_t *process_create_user(
     address_space_t *address_space
 )
 {
-    process_t *process = process_alloc(name, parent_pid, address_space);
+    process_t *process;
+
+    process_reap_terminated();
+
+    process = process_alloc(name, parent_pid, address_space);
 
     if (process == NULL)
     {
@@ -293,6 +617,7 @@ process_t *process_create_user(
 
     if (process->context.kernel_esp == 0)
     {
+        process_unregister(process);
         kfree(process);
         return NULL;
     }
@@ -306,25 +631,23 @@ void scheduler_start(void)
     process_t *first = process_pop_ready();
     address_space_t *first_as;
 
-    if (first == NULL)
+    if (kernel_is_panicked())
     {
         return;
+    }
+
+    if (first == NULL || !process_is_schedulable(first))
+    {
+        first = idle_process;
+    }
+
+    if (first == NULL || !process_is_schedulable(first))
+    {
+        panic("SCHED", "No runnable process at start");
     }
 
     first_as = first->address_space;
-
-    if (!address_space_is_valid(first_as))
-    {
-        first_as = paging_get_kernel_address_space();
-        first->address_space = first_as;
-    }
-
-    if (!address_space_is_valid(first_as) || first->context.kernel_esp == 0)
-    {
-        return;
-    }
-
-    first->state = PROCESS_RUNNING;
+    process_set_state(first, PROCESS_RUNNING);
     current_process = first;
     tss_set_kernel_stack(first->kernel_stack_top + PROCESS_STACK_SIZE);
     address_space_switch(first_as);
@@ -334,18 +657,25 @@ void scheduler_start(void)
 static void scheduler_switch_to(process_t *next)
 {
     process_t *previous;
+    process_t *outgoing;
     int previous_terminated;
     address_space_t *next_as;
     uint32_t next_cr3;
 
-    if (next == NULL || next->state == PROCESS_TERMINATED)
+    if (kernel_is_panicked())
+    {
+        return;
+    }
+
+    if (next == NULL || next->state == PROCESS_TERMINATED ||
+        !process_is_schedulable(next))
     {
         next = idle_process;
     }
 
-    if (next == NULL)
+    if (next == NULL || !process_is_schedulable(next))
     {
-        return;
+        panic("SCHED", "No runnable process");
     }
 
     if (next == current_process)
@@ -355,14 +685,22 @@ static void scheduler_switch_to(process_t *next)
     }
 
     previous = current_process;
+    outgoing = previous;
     previous_terminated =
         (previous != NULL && previous->state == PROCESS_TERMINATED);
+
+    if (previous != NULL)
+    {
+        process_verify_stack_or_panic(previous, "switch-from");
+    }
+
+    process_verify_stack_or_panic(next, "switch-to");
 
     if (previous != NULL && !previous_terminated)
     {
         if (previous->state != PROCESS_BLOCKED)
         {
-            previous->state = PROCESS_READY;
+            process_set_state(previous, PROCESS_READY);
 
             if (previous != idle_process)
             {
@@ -372,28 +710,15 @@ static void scheduler_switch_to(process_t *next)
     }
 
     next_as = next->address_space;
-
-    if (!address_space_is_valid(next_as))
-    {
-        /* PCB may be corrupted; do not resume it with a patched CR3. */
-        next = idle_process;
-        next_as = paging_get_kernel_address_space();
-
-        if (next != NULL)
-        {
-            next->address_space = next_as;
-        }
-    }
-
-    if (next == NULL ||
-        !address_space_is_valid(next_as) ||
-        next->context.kernel_esp == 0)
-    {
-        return;
-    }
-
     next_cr3 = next_as->page_directory_phys;
-    next->state = PROCESS_RUNNING;
+
+    /*
+     * Keep IRQs off across the handoff so a tick cannot reap `outgoing`
+     * while we still execute on its kernel stack.
+     */
+    __asm__ volatile ("cli");
+
+    process_set_state(next, PROCESS_RUNNING);
     current_process = next;
     next->time_slice = PROCESS_TIME_SLICE;
     tss_set_kernel_stack(next->kernel_stack_top + PROCESS_STACK_SIZE);
@@ -403,10 +728,28 @@ static void scheduler_switch_to(process_t *next)
         next->context.kernel_esp,
         next_cr3
     );
+
+    __asm__ volatile ("sti");
+
+    if (outgoing != NULL &&
+        outgoing != current_process &&
+        outgoing->state == PROCESS_TERMINATED)
+    {
+        process_free(outgoing);
+    }
+
+    process_reap_terminated();
 }
 
 void scheduler_tick(void)
 {
+    if (kernel_is_panicked())
+    {
+        return;
+    }
+
+    process_reap_terminated();
+
     if (current_process == NULL)
     {
         return;
@@ -427,6 +770,12 @@ void scheduler_tick(void)
 
 void scheduler_yield(void)
 {
+    if (kernel_is_panicked())
+    {
+        return;
+    }
+
+    process_reap_terminated();
     scheduler_switch_to(process_pop_ready());
 }
 
@@ -449,7 +798,7 @@ void scheduler_wake_sleepers(void)
         if (now >= process->wake_tick)
         {
             process->wake_tick = 0;
-            process->state = PROCESS_READY;
+            process_set_state(process, PROCESS_READY);
             process_append_ready(process);
         }
     }
@@ -465,7 +814,7 @@ void process_sleep(uint32_t ticks)
     }
 
     current_process->wake_tick = timer_get_ticks() + ticks;
-    current_process->state = PROCESS_BLOCKED;
+    process_set_state(current_process, PROCESS_BLOCKED);
     process_remove_from_ready(current_process);
     scheduler_yield();
 }
@@ -495,20 +844,26 @@ int process_terminate(uint32_t pid)
         return -1;
     }
 
+    /* Idle, shell, and other kernel threads are not killable. */
+    if (!process->is_user)
+    {
+        return -1;
+    }
+
     if (process->state == PROCESS_TERMINATED)
     {
         return 0;
     }
 
-    process->exit_status = -1;
-    process->state = PROCESS_TERMINATED;
-    process_remove_from_ready(process);
+    process_mark_terminated(process, -1);
 
     if (process == current_process)
     {
         scheduler_yield();
+        return 0;
     }
 
+    process_reap_terminated();
     return 0;
 }
 
@@ -519,9 +874,7 @@ void process_exit(int32_t status)
         return;
     }
 
-    current_process->exit_status = status;
-    current_process->state = PROCESS_TERMINATED;
-    process_remove_from_ready(current_process);
+    process_mark_terminated(current_process, status);
     scheduler_yield();
 }
 
@@ -616,41 +969,17 @@ void process_handle_exception(void *frame)
         return;
     }
 
-    current_process->exit_status = -1;
-    current_process->state = PROCESS_TERMINATED;
-    process_remove_from_ready(current_process);
+    process_mark_terminated(current_process, -1);
 }
 
 void exception_reschedule(void)
 {
+    process_t *dying = current_process;
     process_t *next = process_pop_ready();
     address_space_t *next_as;
     uint32_t next_cr3;
 
-    if (next == NULL ||
-        next->state == PROCESS_TERMINATED ||
-        next->context.kernel_esp == 0)
-    {
-        next = idle_process;
-    }
-
-    next_as = (next != NULL) ? next->address_space : NULL;
-
-    if (!address_space_is_valid(next_as))
-    {
-        /* Smashed PCB — fall back to idle rather than halt the machine. */
-        next = idle_process;
-        next_as = paging_get_kernel_address_space();
-
-        if (next != NULL)
-        {
-            next->address_space = next_as;
-        }
-    }
-
-    if (next == NULL ||
-        !address_space_is_valid(next_as) ||
-        next->context.kernel_esp == 0)
+    if (kernel_is_panicked())
     {
         for (;;)
         {
@@ -658,12 +987,33 @@ void exception_reschedule(void)
         }
     }
 
+    if (next == NULL || !process_is_schedulable(next))
+    {
+        next = idle_process;
+    }
+
+    if (next == NULL || !process_is_schedulable(next))
+    {
+        panic("SCHED", "No runnable process after exception");
+    }
+
+    next_as = next->address_space;
     next_cr3 = next_as->page_directory_phys;
-    next->state = PROCESS_RUNNING;
+
+    __asm__ volatile ("cli");
+
+    process_set_state(next, PROCESS_RUNNING);
     current_process = next;
     next->time_slice = PROCESS_TIME_SLICE;
     tss_set_kernel_stack(next->kernel_stack_top + PROCESS_STACK_SIZE);
 
-    /* previous == NULL: abandon the broken exception frame entirely. */
+    /*
+     * previous == NULL: abandon the broken exception frame. The dying task
+     * stays TERMINATED until the next process_reap_terminated() on the survivor.
+     */
+    (void)dying;
     process_switch_asm(NULL, next->context.kernel_esp, next_cr3);
+
+    __asm__ volatile ("sti");
+    process_reap_terminated();
 }

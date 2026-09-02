@@ -1,7 +1,7 @@
 #include "ata.h"
 #include "block.h"
 #include "port_io.h"
-#include "terminal.h"
+#include "log.h"
 
 #define ATA_PRIMARY_DATA       0x1F0
 #define ATA_PRIMARY_ERROR      0x1F1
@@ -246,7 +246,7 @@ void ata_initialize(void)
 
     if (!ata_identify(&sectors))
     {
-        terminal_write("ATA: no disk\n");
+        klog(KLOG_WARN, "ATA", "no disk");
         return;
     }
 
@@ -260,10 +260,10 @@ void ata_initialize(void)
 
     if (!block_register(&ata_device))
     {
-        terminal_write("ATA: register failed\n");
+        klog(KLOG_ERROR, "ATA", "register failed");
         ata_present = 0;
         return;
     }
 
-    terminal_write("ATA: hd0 ready\n");
+    klog(KLOG_INFO, "ATA", "hd0 ready");
 }

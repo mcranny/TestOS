@@ -1,7 +1,9 @@
 #include "fs.h"
 #include "tfs.h"
 #include "block.h"
+#include "heap.h"
 #include "terminal.h"
+#include "log.h"
 
 static char current_working_directory[FS_MAX_PATH] = "/";
 
@@ -454,6 +456,167 @@ int fs_install_executable(const char *path, const void *data, uint32_t size)
     return tfs_write(resolved, data, size, 1);
 }
 
+static int fs_paths_equal(const char *left, const char *right)
+{
+    while (*left != '\0' && *right != '\0')
+    {
+        if (*left != *right)
+        {
+            return 0;
+        }
+
+        left++;
+        right++;
+    }
+
+    return *left == '\0' && *right == '\0';
+}
+
+static int fs_resolve_copy_destination(
+    const char *src_resolved,
+    const char *dst_path,
+    char *dst_resolved
+)
+{
+    char parent[FS_MAX_PATH];
+
+    if (!fs_resolve_path(dst_path, dst_resolved))
+    {
+        /* Destination path may not exist yet; resolve against cwd + normalize. */
+        if (path_is_absolute(dst_path))
+        {
+            path_copy(dst_resolved, dst_path, FS_MAX_PATH);
+        }
+        else if (!path_append(current_working_directory, dst_path, dst_resolved))
+        {
+            return 0;
+        }
+
+        if (!path_normalize(dst_resolved))
+        {
+            return 0;
+        }
+    }
+
+    if (tfs_is_directory(dst_resolved))
+    {
+        char combined[FS_MAX_PATH];
+
+        if (!path_append(dst_resolved, fs_base_name(src_resolved), combined))
+        {
+            return 0;
+        }
+
+        path_copy(dst_resolved, combined, FS_MAX_PATH);
+    }
+
+    if (!path_parent(dst_resolved, parent) || !tfs_is_directory(parent))
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+int fs_copy(const char *src_path, const char *dst_path)
+{
+    char src_resolved[FS_MAX_PATH];
+    char dst_resolved[FS_MAX_PATH];
+    char *buffer;
+    uint32_t bytes_read = 0;
+    int executable;
+    int ok;
+
+    if (src_path == NULL || dst_path == NULL)
+    {
+        return 0;
+    }
+
+    if (!fs_resolve_path(src_path, src_resolved))
+    {
+        return 0;
+    }
+
+    if (tfs_is_directory(src_resolved) || !tfs_exists(src_resolved))
+    {
+        return 0;
+    }
+
+    if (!fs_resolve_copy_destination(src_resolved, dst_path, dst_resolved))
+    {
+        return 0;
+    }
+
+    if (fs_paths_equal(src_resolved, dst_resolved))
+    {
+        return 1;
+    }
+
+    buffer = (char *)kmalloc(FS_MAX_FILE_SIZE);
+
+    if (buffer == NULL)
+    {
+        return 0;
+    }
+
+    if (!tfs_read(src_resolved, buffer, FS_MAX_FILE_SIZE, &bytes_read))
+    {
+        kfree(buffer);
+        return 0;
+    }
+
+    executable = tfs_is_executable(src_resolved);
+    ok = tfs_write(dst_resolved, buffer, bytes_read, executable);
+    kfree(buffer);
+    return ok;
+}
+
+int fs_move(const char *src_path, const char *dst_path)
+{
+    char src_resolved[FS_MAX_PATH];
+    char dst_resolved[FS_MAX_PATH];
+
+    if (src_path == NULL || dst_path == NULL)
+    {
+        return 0;
+    }
+
+    if (!fs_resolve_path(src_path, src_resolved))
+    {
+        return 0;
+    }
+
+    if (tfs_is_directory(src_resolved) || !tfs_exists(src_resolved))
+    {
+        return 0;
+    }
+
+    if (!fs_resolve_copy_destination(src_resolved, dst_path, dst_resolved))
+    {
+        return 0;
+    }
+
+    if (fs_paths_equal(src_resolved, dst_resolved))
+    {
+        return 1;
+    }
+
+    if (tfs_exists(dst_resolved))
+    {
+        if (tfs_is_directory(dst_resolved))
+        {
+            return 0;
+        }
+
+        if (!tfs_remove(dst_resolved))
+        {
+            return 0;
+        }
+    }
+
+    return tfs_rename(src_resolved, dst_resolved);
+}
+
 void fs_list_directory(const char *path)
 {
     char resolved[FS_MAX_PATH];
@@ -487,13 +650,13 @@ void fs_initialize(void)
 
     if (disk == NULL)
     {
-        terminal_write("FS: no block device\n");
+        klog(KLOG_ERROR, "FS", "no block device");
         return;
     }
 
     if (!tfs_mount(disk))
     {
-        terminal_write("FS: mount failed\n");
+        klog(KLOG_ERROR, "FS", "mount failed");
         return;
     }
 
@@ -502,7 +665,7 @@ void fs_initialize(void)
         static const char readme[] =
             "Welcome to TestOS.\nUse ./calc <expr> for the calculator.\n";
 
-        terminal_write("FS: formatted new disk\n");
+        klog(KLOG_INFO, "FS", "formatted new disk");
         fs_mkdir("/bin");
         fs_write("/readme.txt", readme, sizeof(readme) - 1U);
         fs_install_executable(
@@ -513,6 +676,11 @@ void fs_initialize(void)
     }
     else
     {
-        terminal_write("FS: mounted hd0\n");
+        klog(KLOG_INFO, "FS", "mounted hd0");
     }
+}
+
+int fs_check(void)
+{
+    return tfs_check();
 }

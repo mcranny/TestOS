@@ -2,6 +2,7 @@
 #include "exceptions.h"
 #include "gdt.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "pic.h"
 #include "syscall_abi.h"
 #include "timer.h"
@@ -10,9 +11,11 @@
 #define IDT_ENTRIES 256
 #define TIMER_VECTOR       (PIC_MASTER_OFFSET + 0)
 #define KEYBOARD_VECTOR    (PIC_MASTER_OFFSET + 1)
+#define MOUSE_VECTOR       (PIC_SLAVE_OFFSET + 4)
 
 extern void timer_irq_stub(void);
 extern void keyboard_irq_stub(void);
+extern void mouse_irq_stub(void);
 extern void syscall_stub(void);
 
 #define DECLARE_EXCEPTION(num) extern void exception_##num(void)
@@ -122,12 +125,14 @@ void interrupts_initialize(void)
 
     idt_set_gate(TIMER_VECTOR, (uint32_t)timer_irq_stub, 0x8E);
     idt_set_gate(KEYBOARD_VECTOR, (uint32_t)keyboard_irq_stub, 0x8E);
+    idt_set_gate(MOUSE_VECTOR, (uint32_t)mouse_irq_stub, 0x8E);
     idt_set_gate(SYSCALL_VECTOR, (uint32_t)syscall_stub, 0xEF);
 
     idt_load();
 
     timer_initialize();
     keyboard_initialize();
+    mouse_initialize();
 }
 
 void interrupts_enable(void)

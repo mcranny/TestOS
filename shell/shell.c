@@ -4,6 +4,7 @@
 #include "heap.h"
 #include "memory.h"
 #include "memory_map.h"
+#include "mouse.h"
 #include "paging.h"
 #include "pmm.h"
 #include "port_io.h"
@@ -12,6 +13,7 @@
 #include "terminal.h"
 #include "timer.h"
 #include "version.h"
+#include "log.h"
 
 #define LINE_BUFFER_SIZE 256
 #define KERNEL_LOAD_ADDRESS 0x00100000
@@ -212,12 +214,17 @@ static void shell_help(void)
     terminal_write("  mkdir    - create a directory\n");
     terminal_write("  rm       - remove a file or empty directory\n");
     terminal_write("  touch    - create an empty file\n");
+    terminal_write("  cp       - copy a file\n");
+    terminal_write("  mv       - move/rename a file\n");
     terminal_write("  ./file   - execute a program\n");
     terminal_write("  sleep    - block for N timer ticks\n");
     terminal_write("  ps       - list processes\n");
     terminal_write("  kill     - terminate a process\n");
+    terminal_write("  mouse    - show mouse position and buttons\n");
     terminal_write("  panic    - halt the kernel\n");
     terminal_write("  reboot   - reboot the system\n");
+    terminal_write("  fsck     - check filesystem consistency\n");
+    terminal_write("  fstest   - run filesystem stress tests\n");
 }
 
 static void shell_version(void)
@@ -538,6 +545,73 @@ static void shell_touch(const char *args)
     }
 }
 
+static int shell_split_two_paths(
+    const char *args,
+    char *first,
+    uint32_t first_size,
+    const char **second_out
+)
+{
+    uint32_t length = 0;
+
+    args = skip_spaces(args);
+
+    if (*args == '\0')
+    {
+        return 0;
+    }
+
+    while (args[length] != '\0' && args[length] != ' ')
+    {
+        if (length + 1U >= first_size)
+        {
+            return 0;
+        }
+
+        first[length] = args[length];
+        length++;
+    }
+
+    first[length] = '\0';
+    *second_out = skip_spaces(args + length);
+
+    return **second_out != '\0';
+}
+
+static void shell_cp(const char *args)
+{
+    char src[FS_MAX_PATH];
+    const char *dst;
+
+    if (!shell_split_two_paths(args, src, sizeof(src), &dst))
+    {
+        terminal_write("Usage: cp <src> <dst>\n");
+        return;
+    }
+
+    if (!fs_copy(src, dst))
+    {
+        terminal_write("cp: failed\n");
+    }
+}
+
+static void shell_mv(const char *args)
+{
+    char src[FS_MAX_PATH];
+    const char *dst;
+
+    if (!shell_split_two_paths(args, src, sizeof(src), &dst))
+    {
+        terminal_write("Usage: mv <src> <dst>\n");
+        return;
+    }
+
+    if (!fs_move(src, dst))
+    {
+        terminal_write("mv: failed\n");
+    }
+}
+
 static void shell_write(const char *args)
 {
     char path[FS_MAX_PATH];
@@ -586,17 +660,26 @@ static void shell_write(const char *args)
 
 static void shell_kill(const char *args)
 {
-    uint32_t pid = shell_parse_uint(args);
+    const char *text = skip_spaces(args);
+    uint32_t pid;
 
-    if (pid == 0)
+    if (*text == '\0')
     {
         terminal_write("Usage: kill <pid>\n");
         return;
     }
 
+    pid = shell_parse_uint(text);
+
+    if (pid == 0)
+    {
+        terminal_write("kill: cannot kill system process\n");
+        return;
+    }
+
     if (process_terminate(pid) != 0)
     {
-        terminal_write("kill: failed\n");
+        terminal_write("kill: failed (missing or system process)\n");
     }
 }
 
@@ -704,6 +787,8 @@ static void shell_exec(const char *line)
 
         scheduler_yield();
     }
+
+    process_reap_terminated();
 }
 
 static void shell_cat(const char *args)
@@ -744,15 +829,73 @@ static void shell_ps(void)
     process_list();
 }
 
+static void int_to_string(int value, char *buffer)
+{
+    uint32_t abs_value;
+    int out = 0;
+
+    if (value < 0)
+    {
+        buffer[out++] = '-';
+        abs_value = (uint32_t)(-value);
+    }
+    else
+    {
+        abs_value = (uint32_t)value;
+    }
+
+    uint_to_string(abs_value, buffer + out);
+}
+
+static void shell_mouse(void)
+{
+    mouse_state_t state;
+    char number[12];
+
+    mouse_get_state(&state);
+
+    terminal_write("Mouse: x=");
+    int_to_string(state.x, number);
+    terminal_write(number);
+    terminal_write(" y=");
+    int_to_string(state.y, number);
+    terminal_write(number);
+    terminal_write(" left=");
+    terminal_write(state.left ? "1" : "0");
+    terminal_write(" right=");
+    terminal_write(state.right ? "1" : "0");
+    terminal_write(" middle=");
+    terminal_write(state.middle ? "1" : "0");
+    terminal_write("\n");
+}
+
+static void shell_fsck(void)
+{
+    if (fs_check() == 0)
+    {
+        terminal_write("fsck: OK\n");
+    }
+    else
+    {
+        terminal_write("fsck: FAILED\n");
+    }
+}
+
+static void shell_fstest(void)
+{
+    if (fs_selftest() == 0)
+    {
+        terminal_write("fstest: PASSED\n");
+    }
+    else
+    {
+        terminal_write("fstest: FAILED\n");
+    }
+}
+
 static void shell_panic(void)
 {
-    terminal_write("Kernel panic: initiated by shell\n");
-    __asm__ volatile ("cli");
-
-    for (;;)
-    {
-        __asm__ volatile ("hlt");
-    }
+    panic("SHELL", "initiated by shell");
 }
 
 static void shell_render_line(char *line, int length, int cursor_pos)
@@ -965,6 +1108,18 @@ static void shell_execute(const char *line)
         return;
     }
 
+    if (command_is(line, "cp"))
+    {
+        shell_cp(line + 2);
+        return;
+    }
+
+    if (command_is(line, "mv"))
+    {
+        shell_mv(line + 2);
+        return;
+    }
+
     if (command_is(line, "write"))
     {
         shell_write(line + 5);
@@ -987,6 +1142,24 @@ static void shell_execute(const char *line)
     if (command_is(line, "ps"))
     {
         shell_ps();
+        return;
+    }
+
+    if (command_is(line, "mouse"))
+    {
+        shell_mouse();
+        return;
+    }
+
+    if (command_is(line, "fsck"))
+    {
+        shell_fsck();
+        return;
+    }
+
+    if (command_is(line, "fstest"))
+    {
+        shell_fstest();
         return;
     }
 

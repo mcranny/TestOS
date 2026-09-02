@@ -28,8 +28,10 @@ int tfs_read(
     uint32_t buffer_size,
     uint32_t *bytes_read
 );
+int tfs_rename(const char *old_path, const char *new_path);
 
 void tfs_list_directory(const char *path);
 int tfs_was_formatted(void);
+int tfs_check(void);
 
 #endif

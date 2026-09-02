@@ -2,6 +2,8 @@
 #include "paging.h"
 #include "process.h"
 #include "terminal.h"
+#include "log.h"
+#include "serial.h"
 
 volatile int exception_need_reschedule = 0;
 
@@ -58,13 +60,19 @@ static void uint_to_hex(uint32_t value, char *buffer)
     buffer[10] = '\0';
 }
 
+static void emit(const char *text)
+{
+    terminal_write(text);
+    serial_write(text);
+}
+
 static void write_hex_field(const char *label, uint32_t value)
 {
     char hex[11];
 
-    terminal_write(label);
+    emit(label);
     uint_to_hex(value, hex);
-    terminal_write(hex);
+    emit(hex);
 }
 
 void exception_handler(exception_frame_t *frame)
@@ -105,61 +113,54 @@ void exception_handler(exception_frame_t *frame)
         name = exception_names[vector];
     }
 
-    terminal_write("CPU exception: ");
-    terminal_write(name);
-    terminal_write(" (");
+    klog(KLOG_ERROR, "CPU", name);
+    emit(" (");
     uint_to_hex(vector, hex);
-    terminal_write(hex);
-    terminal_write(")\n");
+    emit(hex);
+    emit(")\n");
 
     if (process != NULL)
     {
-        terminal_write("  Process: ");
-        terminal_write(process->name);
-        terminal_write(" pid=");
+        emit("  Process: ");
+        emit(process->name);
+        emit(" pid=");
         uint_to_hex(process->pid, hex);
-        terminal_write(hex);
-        terminal_write("\n");
+        emit(hex);
+        emit("\n");
     }
     else
     {
-        terminal_write("  Process: (none)\n");
+        emit("  Process: (none)\n");
     }
 
     write_hex_field("  EIP: ", frame->eip);
-    terminal_write("\n");
+    emit("\n");
     write_hex_field("  Error: ", frame->error_code);
-    terminal_write("\n");
-    terminal_write(user_fault ? "  Mode: user\n" : "  Mode: kernel\n");
+    emit("\n");
+    emit(user_fault ? "  Mode: user\n" : "  Mode: kernel\n");
 
     if (vector == 14)
     {
         __asm__ volatile ("mov %%cr2, %0" : "=r"(fault_address));
         write_hex_field("  CR2: ", fault_address);
-        terminal_write("\n");
+        emit("\n");
     }
 
     write_hex_field("  Fault CR3: ", fault_cr3);
-    terminal_write("\n");
+    emit("\n");
     write_hex_field("  Kernel CR3: ", kernel_cr3);
-    terminal_write("\n");
-    terminal_write(as_valid ? "  Address space: valid\n" : "  Address space: INVALID\n");
+    emit("\n");
+    emit(as_valid ? "  Address space: valid\n" : "  Address space: INVALID\n");
 
     if (user_fault)
     {
-        terminal_write("  Terminating user task.\n");
+        klog(KLOG_WARN, "PROC", "Terminating user task after exception");
         process_handle_exception(frame);
         exception_need_reschedule = 1;
         return;
     }
 
-    terminal_write("  System halted.\n");
-    __asm__ volatile ("cli");
-
-    for (;;)
-    {
-        __asm__ volatile ("hlt");
-    }
+    panic("CPU", name);
 }
 
 void exceptions_initialize(void)

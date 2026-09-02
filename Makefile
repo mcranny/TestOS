@@ -29,7 +29,8 @@ CFLAGS = -ffreestanding \
          -Ifs \
          -Iuser \
          -Iblock \
-         -Idrivers
+         -Idrivers \
+         $(CFLAGS_EXTRA)
 
 LDFLAGS = -m elf_i386 -T linker.ld
 
@@ -54,6 +55,7 @@ KERNEL_C_SOURCES = \
     kernel/terminal.c \
     kernel/keyboard.c \
     kernel/timer.c \
+    kernel/log.c \
     interrupts/interrupts.c \
     interrupts/pic.c \
     shell/shell.c \
@@ -68,8 +70,13 @@ KERNEL_C_SOURCES = \
     task/process.c \
     block/block.c \
     drivers/ata.c \
+    drivers/serial.c \
+    drivers/device.c \
+    drivers/pci.c \
+    drivers/mouse.c \
     fs/tfs.c \
     fs/fs.c \
+    fs/fs_selftest.c \
     user/exec.c \
     user/syscall.c \
     user/uaccess.c
@@ -86,7 +93,7 @@ ASM_OBJECTS = \
     build/syscall_asm.o \
     build/calc_data.o
 
-.PHONY: all iso clean run disk-reset
+.PHONY: all iso clean run disk-reset selftest-run
 
 all: $(KERNEL)
 
@@ -144,6 +151,9 @@ build/kernel.o: kernel/kernel.c | build
 build/terminal.o: kernel/terminal.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
+build/log.o: kernel/log.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
 build/keyboard.o: kernel/keyboard.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -192,10 +202,25 @@ build/block.o: block/block.c | build
 build/ata.o: drivers/ata.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
+build/serial.o: drivers/serial.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/device.o: drivers/device.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/pci.o: drivers/pci.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/mouse.o: drivers/mouse.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
 build/tfs.o: fs/tfs.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build/fs.o: fs/fs.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/fs_selftest.o: fs/fs_selftest.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build/exec.o: user/exec.c | build
@@ -228,7 +253,16 @@ iso: $(ISO)
 
 run: $(KERNEL) $(DISK)
 	$(QEMU) -kernel $(KERNEL) \
-		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-serial stdio
+
+selftest-run:
+	$(MAKE) clean
+	$(MAKE) CFLAGS_EXTRA=-DTESTOS_SELFTEST $(KERNEL)
+	$(MAKE) disk-reset
+	$(QEMU) -kernel $(KERNEL) \
+		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-serial stdio
 
 # Wipe objects/kernel but keep the persistent disk image.
 clean:

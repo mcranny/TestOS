@@ -34,18 +34,77 @@ static void paging_map_page_in(
     uint32_t directory_index = virtual_address >> 22;
     uint32_t table_index = (virtual_address >> 12) & 0x3FFU;
     page_table_entry_t *page_table;
+    uint32_t directory_entry;
 
-    if (directory_index >= PAGE_TABLE_COUNT)
+    if (directory_index >= PAGE_TABLE_ENTRIES)
     {
         return;
     }
 
-    page_table = (page_table_entry_t *)(directory[directory_index] & 0xFFFFF000U);
+    directory_entry = directory[directory_index];
+
+    if ((directory_entry & PAGE_PRESENT) == 0)
+    {
+        uint32_t table_phys = pmm_alloc_frame();
+
+        if (table_phys == 0)
+        {
+            return;
+        }
+
+        page_table = (page_table_entry_t *)table_phys;
+        memset(page_table, 0, PAGE_SIZE);
+        directory[directory_index] = table_phys | PAGE_PRESENT | PAGE_WRITE;
+    }
+    else
+    {
+        page_table = (page_table_entry_t *)(directory_entry & 0xFFFFF000U);
+    }
+
     paging_set_entry(
         &page_table[table_index],
         physical_address,
         flags | PAGE_PRESENT
     );
+}
+
+void *paging_map_mmio(uintptr_t physical_address, size_t size)
+{
+    uint32_t phys_base = (uint32_t)physical_address;
+    uint32_t map_start;
+    uint32_t map_end;
+    uint32_t page_address;
+    uint32_t offset_in_page;
+
+    if (size == 0)
+    {
+        return NULL;
+    }
+
+    offset_in_page = phys_base & (PAGE_SIZE - 1U);
+    map_start = phys_base & ~(PAGE_SIZE - 1U);
+    map_end = phys_base + (uint32_t)size;
+
+    if (map_end < phys_base)
+    {
+        return NULL;
+    }
+
+    map_end = ALIGN_UP(map_end, PAGE_SIZE);
+
+    for (page_address = map_start; page_address < map_end; page_address += PAGE_SIZE)
+    {
+        paging_map_page_in(
+            page_directory,
+            page_address,
+            page_address,
+            PAGE_WRITE | PAGE_PCD
+        );
+    }
+
+    (void)offset_in_page;
+    paging_flush_tlb();
+    return (void *)(uintptr_t)phys_base;
 }
 
 void paging_initialize(void)
@@ -176,6 +235,17 @@ address_space_t *address_space_create(void)
 
         new_directory[table_index] =
             new_table_phys | (page_directory[table_index] & 0xFFFU);
+    }
+
+    /* Share kernel MMIO page tables above the identity-mapped window. */
+    for (table_index = PAGE_TABLE_COUNT; table_index < PAGE_TABLE_ENTRIES; table_index++)
+    {
+        if ((page_directory[table_index] & PAGE_PRESENT) == 0)
+        {
+            continue;
+        }
+
+        new_directory[table_index] = page_directory[table_index];
     }
 
     return address_space;

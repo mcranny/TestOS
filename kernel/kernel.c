@@ -14,6 +14,8 @@
 #include "ata.h"
 #include "device.h"
 #include "pci.h"
+#include "e1000.h"
+#include "ethernet.h"
 #include "fs.h"
 #include "process.h"
 #include "syscall.h"
@@ -89,8 +91,14 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     paging_enable();
     klog(KLOG_INFO, "BOOT", "Paging enabled");
 
+    klog(KLOG_INFO, "BOOT", "Initializing E1000");
+    e1000_initialize();
+
     interrupts_enable();
     klog(KLOG_INFO, "BOOT", "Interrupts enabled");
+
+    klog(KLOG_INFO, "BOOT", "Probing network RX");
+    net_bootstrap();
 
     klog(KLOG_INFO, "BOOT", "Starting scheduler");
     process_create_kernel(shell_process_entry, "shell", 0);

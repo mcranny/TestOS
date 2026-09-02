@@ -12,6 +12,8 @@
 #define PAGE_PRESENT       (1U << 0)
 #define PAGE_WRITE         (1U << 1)
 #define PAGE_USER          (1U << 2)
+#define PAGE_PWT           (1U << 3)
+#define PAGE_PCD           (1U << 4)
 
 #define ALIGN_UP(value, alignment) \
     (((value) + ((alignment) - 1U)) & ~((alignment) - 1U))

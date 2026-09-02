@@ -100,6 +100,27 @@ static void idt_set_gate(uint8_t vector, uint32_t handler, uint8_t type_attr)
     idt[vector].offset_high = (handler >> 16) & 0xFFFF;
 }
 
+void interrupts_register_irq(uint8_t irq, void (*stub)(void))
+{
+    uint8_t vector;
+
+    if (stub == NULL || irq > 15U)
+    {
+        return;
+    }
+
+    if (irq < 8U)
+    {
+        vector = (uint8_t)(PIC_MASTER_OFFSET + irq);
+    }
+    else
+    {
+        vector = (uint8_t)(PIC_SLAVE_OFFSET + (irq - 8U));
+    }
+
+    idt_set_gate(vector, (uint32_t)stub, 0x8E);
+}
+
 void interrupts_initialize(void)
 {
     uint8_t vector;

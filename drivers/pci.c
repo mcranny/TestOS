@@ -42,6 +42,157 @@ uint8_t pci_read8(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset)
     return (uint8_t)((value >> ((offset & 3U) * 8U)) & 0xFFU);
 }
 
+void pci_write32(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint32_t value)
+{
+    outl(PCI_CONFIG_ADDRESS, pci_config_address(bus, device, function, offset));
+    outl(PCI_CONFIG_DATA, value);
+}
+
+void pci_write16(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint16_t value)
+{
+    uint32_t shift = (offset & 2U) * 8U;
+    uint32_t current = pci_read32(bus, device, function, offset);
+    uint32_t mask = 0xFFFFU << shift;
+    uint32_t updated = (current & ~mask) | (((uint32_t)value << shift) & mask);
+
+    pci_write32(bus, device, function, offset, updated);
+}
+
+void pci_write8(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint8_t value)
+{
+    uint32_t shift = (offset & 3U) * 8U;
+    uint32_t current = pci_read32(bus, device, function, offset);
+    uint32_t mask = 0xFFU << shift;
+    uint32_t updated = (current & ~mask) | (((uint32_t)value << shift) & mask);
+
+    pci_write32(bus, device, function, offset, updated);
+}
+
+uint32_t pci_read_bar(device_t *device, uint8_t bar_index)
+{
+    uint8_t offset;
+
+    if (device == NULL || bar_index > 5U)
+    {
+        return 0;
+    }
+
+    offset = (uint8_t)(PCI_BAR0 + (bar_index * 4U));
+    return pci_read32(device->bus, device->device, device->function, offset);
+}
+
+uint32_t pci_bar_size(device_t *device, uint8_t bar_index)
+{
+    uint8_t offset;
+    uint32_t original;
+    uint32_t mask;
+    uint32_t size;
+    int is_io;
+
+    if (device == NULL || bar_index > 5U)
+    {
+        return 0;
+    }
+
+    offset = (uint8_t)(PCI_BAR0 + (bar_index * 4U));
+    original = pci_read32(device->bus, device->device, device->function, offset);
+    is_io = (int)(original & 1U);
+
+    pci_write32(device->bus, device->device, device->function, offset, 0xFFFFFFFFU);
+    mask = pci_read32(device->bus, device->device, device->function, offset);
+    pci_write32(device->bus, device->device, device->function, offset, original);
+
+    if (is_io)
+    {
+        mask &= ~0x3U;
+        if (mask == 0)
+        {
+            return 0;
+        }
+
+        size = (~mask) + 1U;
+        return size & 0xFFFFU;
+    }
+
+    /* 64-bit BAR: probe low dword only for size of the region (typical for E1000). */
+    mask &= ~0xFU;
+    if (mask == 0)
+    {
+        return 0;
+    }
+
+    return (~mask) + 1U;
+}
+
+int pci_decode_bar(device_t *device, uint8_t bar_index, pci_bar_info_t *out)
+{
+    uint32_t raw;
+    uint32_t type_bits;
+
+    if (device == NULL || out == NULL || bar_index > 5U)
+    {
+        return 0;
+    }
+
+    raw = pci_read_bar(device, bar_index);
+    out->index = bar_index;
+    out->is_io = (int)(raw & 1U);
+    out->is_64bit = 0;
+    out->phys_addr = 0;
+    out->size = 0;
+
+    if (out->is_io)
+    {
+        out->phys_addr = raw & ~0x3U;
+    }
+    else
+    {
+        type_bits = (raw >> 1) & 0x3U;
+        out->is_64bit = (type_bits == 0x2U) ? 1 : 0;
+        out->phys_addr = raw & ~0xFU;
+
+        if (out->is_64bit && bar_index < 5U)
+        {
+            /* High dword ignored on 32-bit kernels; base is still low 32 bits. */
+            (void)pci_read_bar(device, (uint8_t)(bar_index + 1U));
+        }
+    }
+
+    out->size = pci_bar_size(device, bar_index);
+    return 1;
+}
+
+void pci_enable_bus_mastering(device_t *device)
+{
+    uint16_t command;
+
+    if (device == NULL)
+    {
+        return;
+    }
+
+    command = pci_read16(device->bus, device->device, device->function, PCI_COMMAND);
+    command |= (uint16_t)(PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER);
+    pci_write16(device->bus, device->device, device->function, PCI_COMMAND, command);
+}
+
+device_t *pci_find_device(uint16_t vendor_id, uint16_t device_id)
+{
+    device_t *dev = device_get_list();
+
+    while (dev != NULL)
+    {
+        if (dev->vendor_id == vendor_id && dev->device_id == device_id)
+        {
+            return dev;
+        }
+
+        dev = dev->next;
+    }
+
+    return NULL;
+}
+
 static void uint_to_hex_nibble(uint8_t nibble, char *out)
 {
     static const char hex_digits[] = "0123456789ABCDEF";
@@ -243,6 +394,18 @@ static void pci_register_function(uint8_t bus, uint8_t device, uint8_t function)
     dev->class_code = class_code;
     dev->subclass = subclass;
     dev->prog_if = prog_if;
+
+    {
+        uint8_t bar_index;
+
+        for (bar_index = 0; bar_index < 6U; bar_index++)
+        {
+            uint8_t bar_offset = (uint8_t)(PCI_BAR0 + (bar_index * 4U));
+            dev->bars[bar_index] = pci_read32(bus, device, function, bar_offset);
+        }
+    }
+
+    dev->interrupt_line = pci_read8(bus, device, function, PCI_INTERRUPT_LINE);
 
     if (!device_register(dev))
     {

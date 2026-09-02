@@ -30,6 +30,7 @@ CFLAGS = -ffreestanding \
          -Iuser \
          -Iblock \
          -Idrivers \
+         -Inet \
          $(CFLAGS_EXTRA)
 
 LDFLAGS = -m elf_i386 -T linker.ld
@@ -73,7 +74,15 @@ KERNEL_C_SOURCES = \
     drivers/serial.c \
     drivers/device.c \
     drivers/pci.c \
+    drivers/e1000.c \
     drivers/mouse.c \
+    net/mac.c \
+    net/ethernet.c \
+    net/arp.c \
+    net/ipv4.c \
+    net/icmp.c \
+    net/checksum.c \
+    net/udp.c \
     fs/tfs.c \
     fs/fs.c \
     fs/fs_selftest.c \
@@ -211,7 +220,31 @@ build/device.o: drivers/device.c | build
 build/pci.o: drivers/pci.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
+build/e1000.o: drivers/e1000.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
 build/mouse.o: drivers/mouse.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/mac.o: net/mac.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/ethernet.o: net/ethernet.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/arp.o: net/arp.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/ipv4.o: net/ipv4.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/icmp.o: net/icmp.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/checksum.o: net/checksum.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/udp.o: net/udp.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build/tfs.o: fs/tfs.c | build
@@ -254,6 +287,7 @@ iso: $(ISO)
 run: $(KERNEL) $(DISK)
 	$(QEMU) -kernel $(KERNEL) \
 		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0,hostfwd=udp::12345-:12345 -device e1000,netdev=net0 \
 		-serial stdio
 
 selftest-run:
@@ -262,6 +296,7 @@ selftest-run:
 	$(MAKE) disk-reset
 	$(QEMU) -kernel $(KERNEL) \
 		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0,hostfwd=udp::12345-:12345 -device e1000,netdev=net0 \
 		-serial stdio
 
 # Wipe objects/kernel but keep the persistent disk image.

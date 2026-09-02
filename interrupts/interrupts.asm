@@ -11,6 +11,9 @@ extern keyboard_handler
 global mouse_irq_stub
 extern mouse_handler
 
+global e1000_irq_stub
+extern e1000_irq_handler
+
 timer_irq_stub:
     push ds
     push es
@@ -69,6 +72,28 @@ mouse_irq_stub:
     mov gs, ax
 
     call mouse_handler
+
+    popa
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    iret
+
+e1000_irq_stub:
+    push ds
+    push es
+    push fs
+    push gs
+    pusha
+
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
+    call e1000_irq_handler
 
     popa
     pop gs

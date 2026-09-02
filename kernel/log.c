@@ -47,6 +47,15 @@ static int category_debug_enabled(const char *category)
     {
         return DEBUG_PCI;
     }
+    if (category[0] == 'E' && category[1] == '1' && category[2] == '0' && category[3] == '0' &&
+        category[4] == '0' && category[5] == '\0')
+    {
+        return DEBUG_E1000;
+    }
+    if (category[0] == 'N' && category[1] == 'E' && category[2] == 'T' && category[3] == '\0')
+    {
+        return DEBUG_NET;
+    }
     if (category[0] == 'M' && category[1] == 'O' && category[2] == 'U' && category[3] == 'S' &&
         category[4] == 'E' && category[5] == '\0')
     {

@@ -31,6 +31,12 @@
 #ifndef DEBUG_PCI
 #define DEBUG_PCI 0
 #endif
+#ifndef DEBUG_E1000
+#define DEBUG_E1000 0
+#endif
+#ifndef DEBUG_NET
+#define DEBUG_NET 0
+#endif
 #ifndef DEBUG_MOUSE
 #define DEBUG_MOUSE 0
 #endif

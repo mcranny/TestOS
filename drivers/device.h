@@ -14,6 +14,8 @@ typedef struct device
     uint8_t class_code;
     uint8_t subclass;
     uint8_t prog_if;
+    uint32_t bars[6];
+    uint8_t interrupt_line;
     struct device *next;
 } device_t;
 

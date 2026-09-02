@@ -20,6 +20,9 @@ uint32_t paging_get_directory_address(void);
 uint32_t paging_get_mapped_bytes(void);
 void paging_flush_tlb(void);
 
+/* Identity-map a physical MMIO region (VA == PA) with PCD. Returns phys base. */
+void *paging_map_mmio(uintptr_t physical_address, size_t size);
+
 address_space_t *paging_get_kernel_address_space(void);
 address_space_t *address_space_create(void);
 void address_space_destroy(address_space_t *address_space);

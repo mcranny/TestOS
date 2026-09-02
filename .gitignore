@@ -1,0 +1,18 @@
+# Build outputs
+/build/
+*.o
+*.elf
+*.bin
+*.iso
+*.img
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# Local toolchain (if placed inside the tree)
+/toolchain/

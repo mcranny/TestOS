@@ -480,6 +480,9 @@ void e1000_irq_handler(void)
     {
         pic_send_eoi(e1000_irq);
     }
+
+    /* Poll RX to process any received frames delivered by the NIC. */
+    (void)e1000_poll_rx();
 }
 
 void e1000_initialize(void)

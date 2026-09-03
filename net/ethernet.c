@@ -3,6 +3,7 @@
 #include "ipv4.h"
 #include "icmp.h"
 #include "udp.h"
+#include "tcp.h"
 #include "e1000.h"
 #include "log.h"
 #include "memory.h"
@@ -138,6 +139,16 @@ void net_bootstrap(void)
     int have_gateway = 0;
 
     udp_init();
+    tcp_init();
+
+#ifdef TESTOS_TCP_SELFTEST
+    if (!tcp_selftest())
+    {
+        klog(KLOG_ERROR, "TCP", "Selftest failed");
+        return;
+    }
+    klog(KLOG_INFO, "TCP", "Selftest passed");
+#endif
 
     /*
      * QEMU's e1000 starts a 1000ms virtual-time flush timer on every RCTL
@@ -174,6 +185,15 @@ void net_bootstrap(void)
         klog(KLOG_WARN, "NET", "No ARP reply yet (try netrx)");
         return;
     }
+
+#ifdef TESTOS_TCP_ACTIVE_TEST
+    /* The headless interop harness provides this host-side listener. */
+#ifdef TESTOS_TCP_TEST_HOOKS
+    tcp_test_drop_next_segment();
+    tcp_test_drop_next_payload();
+#endif
+    (void)tcp_connect(ARP_GATEWAY_IP_DEFAULT, 12347U, 40000U);
+#endif
 
     icmp_arm_echo_wait(ARP_GATEWAY_IP_DEFAULT, 0x1234U, 1U);
     (void)icmp_send_echo_request(ARP_GATEWAY_IP_DEFAULT, 0x1234U, 1U);

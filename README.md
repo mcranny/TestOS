@@ -1,101 +1,101 @@
-# TestOS 0.7.0
+# TestOS 0.8.0
 
-Hobby x86 operating system written in C and assembly. Boots under QEMU with a shell, preemptive multitasking, user-mode programs, a persistent disk filesystem, and a minimal IPv4 network stack.
+TestOS is a small 32-bit x86 operating system written in C and assembly. It
+boots under QEMU and includes a shell, multitasking, user programs, a simple
+filesystem, and an IPv4 network stack.
 
 ## Features
 
-- Multiboot kernel with GDT, IDT, PIC, and PIT timer
-- Physical memory manager, paging, and kernel heap (with allocation canaries)
-- Preemptive round-robin scheduler and kernel/user processes with safe reaping
-- Kernel stack canaries and process lifecycle validation
-- System calls (`int 0x80`) and a small user C library
-- Interactive shell (`ls`, `cat`, `write`, `cp`, `mv`, `ps`, `kill`, `mouse`, `ping`, `udp`, `netrx`, `./calc`, `fsck`, `fstest`, …)
-- Block-device layer with ATA PIO driver
-- Custom on-disk filesystem (TFS) with `tfs_check` consistency pass
-- PCI enumeration and device registry (BAR decode, bus mastering)
-- Intel E1000 NIC driver (MMIO, TX/RX rings) under QEMU
-- Network stack: Ethernet, ARP, IPv4, ICMP ping, UDP with port bind/echo
-- PS/2 mouse (IRQ12) with shell `mouse` status
-- COM1 serial debug output and unified `klog` / `panic`
-- User-mode calculator loaded from the filesystem
+- Multiboot startup, GDT, IDT, PIC, PIT, paging, and a kernel heap
+- Preemptive kernel and user processes
+- System calls and a small user C library
+- Interactive shell with filesystem, process, mouse, and network commands
+- ATA disk support and the TFS filesystem
+- Intel E1000 support for QEMU
+- Ethernet, ARP, IPv4, ICMP, UDP, and TCP
+- Serial logging and filesystem self-tests
 
-## Build
+## Build and run
 
-Requires:
-
-- [nasm](https://www.nasm.us/)
-- `i686-elf-gcc` / `i686-elf-ld` (or adjust `TOOLCHAIN` in the Makefile)
-- QEMU (`qemu-system-i386`)
-- MSYS2 or similar Unix-like environment on Windows helps for `make` / `dd`
+The Docker development environment is the easiest way to build TestOS without
+installing the cross-compilation and QEMU tools on the host.
 
 ```bash
-make        # build kernel
-make run    # boot in QEMU with IDE disk (build/disk.img) and COM1 on stdio
+./dev/run-in-docker.sh --build
 ```
 
-First run creates a 16 MiB `build/disk.img` if missing. To wipe the disk and re-seed `/calc` + `readme.txt`:
+The command builds the image and opens a shell in the repository. Inside that
+shell:
 
 ```bash
-make disk-reset
+make
+make run
 ```
 
-`make clean` removes objects and the kernel binary but keeps `disk.img`.
+For a visual session from Docker, use VNC. Leave the command running and
+connect from macOS to `vnc://localhost:5900` with password `testos1`.
 
-### Serial console
+```bash
+make run-vnc
+```
 
-`make run` passes `-serial stdio`, so boot and kernel logs appear on the host terminal as well as VGA.
+You can choose another temporary VNC password with
+`make run-vnc VNC_PASSWORD=yourpass`.
 
-### Networking
+## Networking
 
-`make run` attaches a user-mode NIC with UDP port forward `host:12345` → guest `:12345` (UDP echo service).
+QEMU user networking gives the guest address `10.0.2.15` and gateway
+`10.0.2.2`.
 
-In the guest shell:
+- Host UDP `127.0.0.1:12345` forwards to the guest UDP echo service.
+- Host TCP `127.0.0.1:12346` forwards to the guest TCP echo service.
 
-- `ping 10.0.2.2` — ICMP echo to the QEMU gateway
-- `udp <ip> <port> <message>` — send a UDP datagram
-- `netrx` — poll for received frames
+The shell includes `ping`, `udp`, and `netrx` commands. The TCP service accepts
+standard host TCP connections and echoes application data.
 
-From the host, send UDP to `127.0.0.1:12345` to exercise the guest echo service.
+## TCP regression test
 
-### Filesystem checks
+Inside the Docker shell, run:
 
-In the shell:
+```bash
+./dev/tcp-interop-test.sh
+```
 
-- `fsck` — run `tfs_check` and report OK/FAILED
-- `fstest` — stress create/write/read/delete/fill, then `tfs_check`
+The test builds a test kernel, boots QEMU headlessly, checks active and passive
+opens, exercises malformed packets and retransmission, exchanges 25 sequential
+1021-byte payloads with a standard host TCP peer, and validates a PCAP. It
+leaves `build/tcp-serial.log` and `build/tcp.pcap` for inspection, then rebuilds
+the normal kernel.
 
-Boot-time self-test (optional):
+The TCP implementation is intentionally small: IPv4 only, eight connection
+slots, a 1024-byte receive window, one unacknowledged application segment per
+connection, and no TCP option negotiation, congestion control, fragmentation
+reassembly, or TIME-WAIT state.
+
+## Filesystem checks
 
 ```bash
 make selftest-run
-# or: make CFLAGS_EXTRA=-DTESTOS_SELFTEST && make run
 ```
 
-Persistence across reboot is still a manual check: write a file, quit QEMU, `make run` again, and `cat` the file.
-
-### Debug categories
-
-`kernel/log.h` gates `KLOG_DEBUG` per subsystem (`DEBUG_MEM`, `DEBUG_PROC`, `DEBUG_FS`, …). INFO and above always emit to VGA and serial.
+The shell also provides `fsck` and `fstest` commands.
 
 ## Layout
 
-| Path | Role |
-|------|------|
-| `boot/` | Multiboot entry |
-| `kernel/` | Core kernel, terminal, keyboard, timer, logging |
-| `memory/` | PMM, paging, heap |
-| `task/` | Processes and context switch |
-| `user/` | Syscalls, exec, `calc` |
-| `fs/` | VFS API + TFS + selftest |
-| `block/` | Block device abstraction |
-| `drivers/` | Hardware drivers (ATA, serial, PCI, E1000, mouse) |
-| `net/` | Ethernet, ARP, IPv4, ICMP, UDP |
-| `shell/` | Interactive shell |
-| `cpu/` / `arch/` / `interrupts/` | Exceptions, GDT/TSS, IRQs |
+| Directory | Contents |
+| --- | --- |
+| `boot` | Multiboot entry code |
+| `kernel`, `arch`, `interrupts`, `cpu` | Kernel startup and hardware support |
+| `memory`, `task` | Memory management and processes |
+| `drivers` | ATA, PCI, serial, mouse, and E1000 drivers |
+| `net` | Ethernet, ARP, IPv4, ICMP, UDP, and TCP |
+| `fs`, `block` | Filesystem and block-device layers |
+| `user`, `shell` | User programs, system calls, and shell |
+| `dev` | Docker environment and regression scripts |
 
 ## Version
 
-Current release: **0.7.0** (see `include/version.h`).
+Current release: **0.8.0**.
 
 ## License
 

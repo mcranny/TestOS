@@ -4,6 +4,7 @@
 #include "ethernet.h"
 #include "icmp.h"
 #include "udp.h"
+#include "tcp.h"
 #include "log.h"
 #include "memory.h"
 
@@ -156,6 +157,10 @@ void ipv4_input(const uint8_t *payload, uint16_t length, const mac_addr_t *src_m
     else if (protocol == IPV4_PROTO_UDP)
     {
         udp_input(l4, l4_len, src_ip, dst_ip);
+    }
+    else if (protocol == IPV4_PROTO_TCP)
+    {
+        tcp_input(l4, l4_len, src_ip, dst_ip);
     }
 }
 

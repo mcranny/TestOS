@@ -18,6 +18,7 @@ typedef uint32_t ipv4_addr_t;
 #define IPV4_HDR_MIN_LEN   20U
 #define IPV4_PROTO_ICMP    1U
 #define IPV4_PROTO_UDP     17U
+#define IPV4_PROTO_TCP     6U
 #define IPV4_TTL_DEFAULT   64U
 
 typedef struct

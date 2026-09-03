@@ -1,4 +1,4 @@
-# TestOS 0.8.0
+# TestOS 0.8.1
 
 TestOS is a small 32-bit x86 operating system written in C and assembly. It
 boots under QEMU and includes a shell, multitasking, user programs, a simple
@@ -49,6 +49,8 @@ QEMU user networking gives the guest address `10.0.2.15` and gateway
 
 - Host UDP `127.0.0.1:12345` forwards to the guest UDP echo service.
 - Host TCP `127.0.0.1:12346` forwards to the guest TCP echo service.
+- Host TCP `127.0.0.1:8080` forwards to the guest HTTP service. Open
+  `http://127.0.0.1:8080/` in Safari while `make run` is active through Docker.
 
 The shell includes `ping`, `udp`, and `netrx` commands. The TCP service accepts
 standard host TCP connections and echoes application data.
@@ -71,6 +73,31 @@ The TCP implementation is intentionally small: IPv4 only, eight connection
 slots, a 1024-byte receive window, one unacknowledged application segment per
 connection, and no TCP option negotiation, congestion control, fragmentation
 reassembly, or TIME-WAIT state.
+
+## Kernel sockets and HTTP
+
+`net/socket.h` exposes a bounded kernel API for create, bind, listen, accept,
+connect, send, receive, and close. Handles include a generation counter, so
+stale handles are rejected. Send buffers remain caller-owned; `socket_send`
+returns `SOCKET_WOULD_BLOCK` while its prior TCP segment awaits acknowledgement.
+Receive returns buffered bytes before `SOCKET_EOF` after a peer close.
+There are eight socket descriptors, a four-connection listener backlog, and a
+2048-byte receive buffer per connection. Calls never sleep: the timer polling
+path advances TCP and HTTP, so applications retry `SOCKET_WOULD_BLOCK`.
+
+The HTTP/1.0 service listens on guest port 8080 and uses only this socket API.
+It handles `GET /`, 404, 405, malformed input, and bounded headers. Its
+1400-byte page deliberately spans multiple TCP segments.
+
+Inside the Docker shell, run the headless verification:
+
+```bash
+./dev/http-interop-test.sh
+```
+
+It builds and boots QEMU, waits for the HTTP-ready serial message, validates
+framing and body length, fragmentation, errors, reuse, four concurrent clients,
+and leaves `build/http-serial.log` plus `build/http.pcap` as evidence.
 
 ## Filesystem checks
 
@@ -95,7 +122,7 @@ The shell also provides `fsck` and `fstest` commands.
 
 ## Version
 
-Current release: **0.8.0**.
+Current release: **0.8.1**.
 
 ## License
 

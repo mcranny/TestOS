@@ -3,6 +3,7 @@
 #include "pic.h"
 #include "port_io.h"
 #include "tcp.h"
+#include "http.h"
 
 #define PIT_CHANNEL0_DATA 0x40
 #define PIT_COMMAND       0x43
@@ -27,6 +28,7 @@ void timer_handler(void)
 {
     timer_ticks++;
     tcp_timer_tick();
+    http_poll();
     pic_send_eoi(TIMER_IRQ);
     scheduler_wake_sleepers();
     scheduler_tick();

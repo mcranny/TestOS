@@ -141,6 +141,8 @@ KERNEL_C_SOURCES = \
     net/icmp.c \
     net/checksum.c \
     net/tcp.c \
+    net/socket.c \
+    net/http.c \
     net/udp.c \
     fs/tfs.c \
     fs/fs.c \
@@ -309,6 +311,12 @@ build/udp.o: net/udp.c | build
 build/tcp.o: net/tcp.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
+build/socket.o: net/socket.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/http.o: net/http.c | build
+	$(CC) $(CFLAGS) -c $< -o $@
+
 build/tfs.o: fs/tfs.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -349,7 +357,7 @@ iso: $(ISO)
 run: $(KERNEL) $(DISK)
 	$(QEMU) -kernel $(KERNEL) \
 		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0,hostfwd=udp::12345-:12345,hostfwd=tcp::12346-:12346 -device e1000,netdev=net0 \
+		-netdev user,id=net0,hostfwd=udp::12345-:12345,hostfwd=tcp::12346-:12346,hostfwd=tcp::8080-:8080 -device e1000,netdev=net0 \
 		$(QEMU_DISPLAY_OPTS) \
 		-serial stdio
 
@@ -358,7 +366,7 @@ run: $(KERNEL) $(DISK)
 run-vnc: $(KERNEL) $(DISK)
 	$(QEMU) -kernel $(KERNEL) \
 		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
-		-netdev user,id=net0,hostfwd=udp::12345-:12345,hostfwd=tcp::12346-:12346 -device e1000,netdev=net0 \
+		-netdev user,id=net0,hostfwd=udp::12345-:12345,hostfwd=tcp::12346-:12346,hostfwd=tcp::8080-:8080 -device e1000,netdev=net0 \
 		-object secret,id=vncpass,data=$(VNC_PASSWORD),format=raw \
 		-display none -vnc 0.0.0.0:0,password-secret=vncpass \
 		-serial stdio

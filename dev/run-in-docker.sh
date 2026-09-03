@@ -16,6 +16,7 @@ fi
 docker run --rm -it \
   -v "${REPO_ROOT}:/work" \
   -p 5900:5900 \
+  -p 8080:8080 \
   -w /work \
   --name testos-dev \
   ${IMAGE_NAME} /bin/bash

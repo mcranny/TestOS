@@ -173,6 +173,7 @@ int ipv4_send(
 {
     uint8_t packet[ETH_MAX_PAYLOAD];
     mac_addr_t dst_mac;
+    ipv4_addr_t next_hop;
     uint16_t total;
     uint16_t checksum;
     uint16_t id;
@@ -187,9 +188,15 @@ int ipv4_send(
         return 0;
     }
 
-    if (!arp_lookup(dst, &dst_mac))
+    /* QEMU user networking routes off-subnet host-forward clients via 10.0.2.2. */
+    next_hop = dst;
+    if ((dst & 0xFFFFFF00U) != (arp_get_local_ip() & 0xFFFFFF00U))
     {
-        (void)arp_request(dst);
+        next_hop = ARP_GATEWAY_IP_DEFAULT;
+    }
+    if (!arp_lookup(next_hop, &dst_mac))
+    {
+        (void)arp_request(next_hop);
         return 0;
     }
 

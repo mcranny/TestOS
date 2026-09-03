@@ -4,6 +4,8 @@
 #include "icmp.h"
 #include "udp.h"
 #include "tcp.h"
+#include "socket.h"
+#include "http.h"
 #include "e1000.h"
 #include "log.h"
 #include "memory.h"
@@ -140,6 +142,8 @@ void net_bootstrap(void)
 
     udp_init();
     tcp_init();
+    socket_init();
+    http_init();
 
 #ifdef TESTOS_TCP_SELFTEST
     if (!tcp_selftest())

@@ -28,6 +28,9 @@ Quick start
    # 25 sequential host-to-guest echoes, malformed input, retransmission, PCAP)
    ./dev/tcp-interop-test.sh
 
+   # Headless HTTP socket/server verification (host port 8080).
+   ./dev/http-interop-test.sh
+
    # Visual boot from Docker: run this, then connect macOS Screen Sharing to
    # vnc://localhost:5900 using password testos1.
    make run-vnc

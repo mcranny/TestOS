@@ -9,6 +9,7 @@
 #define FW_CFG_FILE_DIR 0x0019
 #define FW_CFG_MAX_FILES 64U
 #define E820_TABLE_MAX_BYTES 2048U
+#define MULTIBOOT_MMAP_MAX_BYTES (64U * 1024U)
 
 typedef struct fw_cfg_file
 {
@@ -105,14 +106,36 @@ static int memory_map_load_multiboot_mmap(const multiboot_info_t *info)
 {
     uint32_t offset = 0;
 
+    if (info->mmap_length == 0 || info->mmap_length > MULTIBOOT_MMAP_MAX_BYTES)
+    {
+        return 0;
+    }
+
     while (offset < info->mmap_length)
     {
         const multiboot_mmap_entry_t *entry =
             (const multiboot_mmap_entry_t *)(info->mmap_addr + offset);
+        uint32_t record_size;
+
+        if (info->mmap_length - offset < sizeof(entry->size))
+        {
+            return 0;
+        }
+
+        if (entry->size < sizeof(*entry) - sizeof(entry->size))
+        {
+            return 0;
+        }
+
+        record_size = entry->size + sizeof(entry->size);
+        if (record_size > info->mmap_length - offset)
+        {
+            return 0;
+        }
 
         memory_map_add_region(entry->addr, entry->len, entry->type);
 
-        offset += entry->size + sizeof(entry->size);
+        offset += record_size;
     }
 
     return region_count > 0;

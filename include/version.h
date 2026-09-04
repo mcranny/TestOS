@@ -2,6 +2,6 @@
 #define VERSION_H
 
 #define TESTOS_NAME    "TestOS"
-#define TESTOS_VERSION "0.8.1"
+#define TESTOS_VERSION "0.9"
 
 #endif

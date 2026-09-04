@@ -29,22 +29,40 @@ static void shell_process_entry(void)
 
 void kernel_main(uint32_t magic, uint32_t mb_info)
 {
-    terminal_initialize();
+    terminal_initialize_multiboot(magic, (const multiboot_info_t *)mb_info);
     serial_initialize();
 
-    klog(KLOG_INFO, "BOOT", "Starting kernel");
+    klog(KLOG_INFO, "BOOT", "Kernel loaded; Multiboot handoff accepted");
+    if (terminal_framebuffer_active())
+    {
+        klog(KLOG_INFO, "BOOT", "Framebuffer display initialized");
+    }
+    else
+    {
+        klog(KLOG_WARN, "BOOT", "Framebuffer unavailable; using legacy text display");
+    }
+    terminal_set_boot_stage("KERNEL");
 
     klog(KLOG_INFO, "BOOT", "Initializing GDT");
+    terminal_set_boot_stage("GDT");
     gdt_initialize();
 
     klog(KLOG_INFO, "BOOT", "Initializing memory map");
     memory_map_initialize(magic, (const multiboot_info_t *)mb_info);
+    klog(KLOG_INFO, "BOOT", "Boot information validated; memory map accepted");
+    terminal_set_boot_stage("MEMORY");
 
     klog(KLOG_INFO, "BOOT", "Initializing PMM");
     pmm_initialize();
 
     klog(KLOG_INFO, "BOOT", "Initializing paging");
     paging_initialize();
+    if (terminal_framebuffer_size() != 0)
+    {
+        (void)paging_map_mmio(terminal_framebuffer_address(), terminal_framebuffer_size());
+    }
+    klog(KLOG_INFO, "BOOT", "Paging structures and descriptor tables ready");
+    terminal_set_boot_stage("PAGING");
 
     klog(KLOG_INFO, "BOOT", "Initializing heap");
     heap_initialize();
@@ -95,10 +113,15 @@ void kernel_main(uint32_t magic, uint32_t mb_info)
     e1000_initialize();
 
     interrupts_enable();
-    klog(KLOG_INFO, "BOOT", "Interrupts enabled");
+    klog(KLOG_INFO, "BOOT", "Interrupt and timer initialization complete");
+    terminal_set_boot_stage("INTERRUPTS");
 
     klog(KLOG_INFO, "BOOT", "Probing network RX");
     net_bootstrap();
+
+    /* This marker is intentionally independent of optional QEMU devices. */
+    klog(KLOG_INFO, "BOOT", "TestOS ready");
+    terminal_set_boot_stage("TESTOS READY");
 
     klog(KLOG_INFO, "BOOT", "Starting scheduler");
     process_create_kernel(shell_process_entry, "shell", 0);

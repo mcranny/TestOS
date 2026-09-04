@@ -52,6 +52,8 @@ endif
 KERNEL = build/kernel.bin
 ISO    = build/testos.iso
 DISK   = build/disk.img
+USB_IMAGE = build/testos-usb.img
+UEFI_KERNEL = build/testos-uefi.elf
 DISK_SIZE_MB = 16
 VNC_PASSWORD ?= testos1
 
@@ -163,7 +165,7 @@ ASM_OBJECTS = \
     build/syscall_asm.o \
     build/calc_data.o
 
-.PHONY: all iso clean run run-vnc disk-reset selftest-run
+.PHONY: all iso uefi-kernel usb-image uefi-usb-test clean run run-vnc disk-reset selftest-run
 
 all: $(KERNEL)
 
@@ -354,6 +356,22 @@ $(ISO): $(KERNEL)
 
 iso: $(ISO)
 
+# A self-contained GPT/FAT32 UEFI removable-media image.  This never writes a
+# physical disk; see README.md for the guarded, manual flashing procedure.
+uefi-kernel: $(UEFI_KERNEL)
+
+$(UEFI_KERNEL): uefi/entry.S uefi/kernel.c uefi/limine.h uefi/types.h uefi/linker.ld | build
+
+	$(CC) -m64 -ffreestanding -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=kernel -nostdlib -nostdinc -Wall -Wextra -Iuefi -c uefi/entry.S -o build/uefi-entry.o
+	$(CC) -m64 -ffreestanding -fno-pie -fno-stack-protector -mno-red-zone -mcmodel=kernel -nostdlib -nostdinc -Wall -Wextra -Iuefi -c uefi/kernel.c -o build/uefi-kernel.o
+	$(LD) -m elf_x86_64 -nostdlib -z max-page-size=0x1000 -T uefi/linker.ld -o $@ build/uefi-entry.o build/uefi-kernel.o
+
+usb-image: $(KERNEL) $(UEFI_KERNEL)
+	./dev/build-usb-image.sh
+
+uefi-usb-test: usb-image
+	./dev/uefi-usb-test.sh $(USB_IMAGE)
+
 run: $(KERNEL) $(DISK)
 	$(QEMU) -kernel $(KERNEL) \
 		-drive file=$(DISK),format=raw,if=ide,index=0,media=disk \
@@ -383,5 +401,5 @@ selftest-run:
 
 # Wipe objects/kernel but keep the persistent disk image.
 clean:
-	rm -f build/*.o build/*.elf build/*.bin build/*.iso
+	rm -f build/*.o build/*.elf build/*.bin build/*.iso build/*.ppm build/*.log
 	rm -rf build/isodir

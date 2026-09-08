@@ -32,8 +32,12 @@ boot_once() {
         -display none -serial "file:${log}" -monitor "unix:${monitor},server,nowait" \
         -no-reboot -no-shutdown &
     qemu_pid=$!
-    for _ in $(seq 1 100); do
+    for _ in $(seq 1 150); do
         grep -q 'BOOT: TestOS ready' "${log}" 2>/dev/null && break
+        sleep 0.1
+    done
+    for _ in $(seq 1 50); do
+        grep -Eq 'timer ticks=0x[0-9a-f]+' "${log}" 2>/dev/null && break
         sleep 0.1
     done
     if [ -S "${monitor}" ]; then printf 'screendump %s\nquit\n' "${screenshot}" | nc -U "${monitor}" >/dev/null || true; fi
@@ -45,6 +49,9 @@ boot_once() {
         return 1
     fi
     grep -Eq 'framebuffer physical=0x[0-9a-f]{16}' "${log}"
+    grep -Eq 'IDT loaded' "${log}"
+    grep -Eq 'paging probe OK' "${log}"
+    grep -Eq 'timer ticks=0x[0-9a-f]+' "${log}"
     python3 - "${screenshot}" <<'PY'
 import sys
 p = open(sys.argv[1], 'rb').read()

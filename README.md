@@ -1,20 +1,18 @@
- TestOS 0.10
+# TestOS
 
-Small x86-64 OS. Boots via Limine on UEFI (QEMU or USB).
+x86-64 operating system with UEFI boot. Runs under QEMU or from USB.
 
-## Now
+## Features
 
-- Limine UEFI boot, framebuffer console, serial log
-- GDT / IDT / TSS, PIC, PIT, keyboard
-- PMM, 4-level paging, kernel heap
-- PCI scan, ATA PIO + TFS (second IDE disk in QEMU)
-- Preemptive processes, syscalls (`syscall`/`sysret`), ring 3
-- ELF64 loader, shell, `calc`, `ps` / `kill`
+- Console and serial output
+- Preemptive multitasking and user-mode programs
+- Interactive shell
+- Persistent filesystem on disk
 
-## Next
+## Planned
 
-- Networking (E1000 / IPv4 stack port)
-- More user programs and shell polish
+- Networking
+- Additional user programs
 
 ## Run
 
@@ -22,12 +20,12 @@ Small x86-64 OS. Boots via Limine on UEFI (QEMU or USB).
 make run-uefi
 ```
 
-Windows (clang + QEMU): `powershell -File dev/build-uefi.ps1`, refresh the local USB image, then `./dev/run-uefi.sh`.
+Windows (clang + QEMU): `powershell -File dev/build-uefi.ps1`, then `./dev/run-uefi.sh`.
 
-USB image for real hardware: `make usb-image` (see `dev/`).
+USB image: `make usb-image` (see `dev/`).
 
 ## Layout
 
-- `uefi/` — active kernel
-- `dev/` — build / QEMU / image helpers
-- `legacy/` — archived 32-bit Multiboot tree (not the default build)
+- `uefi/` — kernel
+- `dev/` — build and run helpers
+- `legacy/` — archived 32-bit tree

@@ -21,10 +21,14 @@ else
     UEFI_LD ?= $(shell command -v ld.lld 2>/dev/null || echo ld.lld)
 endif
 
+# Windows/MSYS often lacks python3 on PATH; prefer PATH, then common installs.
 PYTHON ?= $(shell \
 	command -v python3 2>/dev/null || \
 	command -v python 2>/dev/null || \
 	command -v py 2>/dev/null || \
+	(test -x "/c/Users/$${USER}/AppData/Local/Programs/Python/Python311/python.exe" && echo "/c/Users/$${USER}/AppData/Local/Programs/Python/Python311/python.exe") || \
+	(test -x "/c/Users/$${USERNAME}/AppData/Local/Programs/Python/Python311/python.exe" && echo "/c/Users/$${USERNAME}/AppData/Local/Programs/Python/Python311/python.exe") || \
+	(ls /c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe 2>/dev/null | head -1) || \
 	echo python)
 
 UEFI_CFLAGS = --target=x86_64-unknown-none-elf -m64 -ffreestanding -fno-pie -fno-pic \

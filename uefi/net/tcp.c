@@ -359,6 +359,7 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
     if (c->state != TCP_ESTABLISHED && c->state != TCP_FIN_WAIT_2) return;
     if (data_len) {
         int accepted = 1;
+        int need_ack = 1;
         if (seq != c->rcv_nxt || data_len > TCP_WINDOW) { tcp_ack(c); return; }
         if (c->state == TCP_ESTABLISHED && c->local_port == TCP_ECHO_PORT)
         {
@@ -369,7 +370,12 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
                 tcp_test_drop_next_segment();
             }
 #endif
-            (void)tcp_send(src, src_port, dst_port, &p[hdr], data_len);
+            /* Advance before echo so the PSH+ACK piggybacks covering rcv_nxt. */
+            c->rcv_nxt += data_len;
+            if (!tcp_send(src, src_port, dst_port, &p[hdr], data_len)) {
+                tcp_ack(c);
+            }
+            need_ack = 0;
         }
         else {
             /* Listeners serve passive sockets; clients use the global app callbacks. */
@@ -380,11 +386,13 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
             if (cb && cb->data) {
                 accepted = cb->data(src, c->local_port, c->remote_port, &p[hdr], data_len);
             }
+            /* Only ACK after the app accepts; avoids ACK-then-drop on full RX. */
+            if (!accepted) return;
+            c->rcv_nxt += data_len;
         }
-        /* Only ACK after the app accepts; avoids ACK-then-drop on full RX. */
-        if (!accepted) return;
-        c->rcv_nxt += data_len;
-        tcp_ack(c);
+        if (need_ack) {
+            tcp_ack(c);
+        }
     }
     if (flags & TCP_FIN) {
         if (seq + data_len != c->rcv_nxt) { tcp_ack(c); return; }

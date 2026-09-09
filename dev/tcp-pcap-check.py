@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Assert that the QEMU filter-dump capture contains a valid TCP exchange."""
+"""Assert that the QEMU filter-dump capture contains a valid TCP exchange.
+
+Used by `dev/uefi-net-smoke.py` (UEFI/QEMU). Not tied to the legacy i386
+`tcp-interop-test.sh` wrapper.
+"""
 
 import struct
 import sys

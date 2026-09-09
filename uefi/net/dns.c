@@ -305,6 +305,7 @@ int dns_resolve_timeout(const char *hostname, ipv4_addr_t *out, uint32_t timeout
 
     dns_waiting = 1;
     dns_result_ip = 0;
+    /* Non-zero includes IPV4_ARP_PENDING: keep waiting until reply or timeout. */
     if (!dns_send_query(hostname, server)) {
         dns_waiting = 0;
         return 0;
@@ -324,7 +325,7 @@ int dns_resolve_timeout(const char *hostname, ipv4_addr_t *out, uint32_t timeout
 
 int dns_resolve(const char *hostname, ipv4_addr_t *out)
 {
-    /* First try allows ARP resolution of the DNS server; retry covers late replies. */
+    /* Retry once for lost UDP replies; ARP-pending is waitable inside the timeout. */
     if (dns_resolve_timeout(hostname, out, 5U * TIMER_FREQUENCY)) {
         return 1;
     }

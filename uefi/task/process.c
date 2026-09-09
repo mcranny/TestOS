@@ -4,12 +4,13 @@
 #include "mm/pmm.h"
 #include "arch/tss.h"
 #include "arch/io.h"
+#include "cpu/cpu_local.h"
 #include "drivers/console.h"
 #include "lib/string.h"
 #include "platform.h"
+#include "socket.h"
 
 static process_t table[PROCESS_MAX];
-static process_t *current;
 static process_t *ready_head;
 static process_t *ready_tail;
 static uint32_t next_pid = 1;
@@ -29,6 +30,7 @@ static void name_copy(char *dst, const char *src)
 
 static void ready_enqueue(process_t *p)
 {
+    uint64_t flags = irq_save();
     p->next = NULL;
     p->state = PROC_READY;
     if (!ready_tail) {
@@ -37,15 +39,22 @@ static void ready_enqueue(process_t *p)
         ready_tail->next = p;
         ready_tail = p;
     }
+    irq_restore(flags);
 }
 
 static process_t *ready_dequeue(void)
 {
-    process_t *p = ready_head;
-    if (!p) return NULL;
+    process_t *p;
+    uint64_t flags = irq_save();
+    p = ready_head;
+    if (!p) {
+        irq_restore(flags);
+        return NULL;
+    }
     ready_head = p->next;
     if (!ready_head) ready_tail = NULL;
     p->next = NULL;
+    irq_restore(flags);
     return p;
 }
 
@@ -62,11 +71,31 @@ static process_t *alloc_slot(void)
 }
 
 void syscall_set_kernel_rsp(uint64_t rsp);
+extern uint64_t current_syscall_user_rsp;
+
+/* Process whose syscall_user_rsp is currently mirrored in the CPU live slot. */
+static process_t *syscall_rsp_owner;
 
 static void set_kernel_stacks(process_t *p)
 {
     uint64_t top;
     if (!p || !p->kernel_stack) return;
+
+    /*
+     * H7: syscall_entry.S saves user RSP in a per-CPU live slot. Spill that
+     * slot into the previous owner and reload from the next process so a
+     * yield/block mid-syscall cannot clobber another process's saved RSP.
+     * Only swap when the owner changes — reloading for the same process would
+     * wipe an in-flight SYSCALL save. (Field is after kernel_rsp/cr3.)
+     */
+    if (syscall_rsp_owner != p) {
+        if (syscall_rsp_owner) {
+            syscall_rsp_owner->syscall_user_rsp = current_syscall_user_rsp;
+        }
+        current_syscall_user_rsp = p->syscall_user_rsp;
+        syscall_rsp_owner = p;
+    }
+
     top = ((uint64_t)p->kernel_stack + PROCESS_KERNEL_STACK_SIZE + 15) & ~15ULL;
     tss_set_kernel_stack(top);
     syscall_set_kernel_rsp(top);
@@ -150,7 +179,7 @@ void scheduler_init(void)
     if (!shell->kernel_stack) {
         panic("scheduler: shell stack alloc failed");
     }
-    current = shell;
+    cpu_set_current(shell);
     set_kernel_stacks(shell);
 
     idle = process_create_kernel(idle_thread, "idle", shell->pid);
@@ -167,27 +196,39 @@ void scheduler_init(void)
 
 static void switch_to(process_t *next)
 {
-    process_t *prev = current;
+    process_t *prev = cpu_current();
+    uint64_t flags;
     if (!next || next == prev) return;
+
+    /*
+     * Paired state + ready-queue update must be atomic vs scheduler_tick.
+     * Enable IF before process_switch so the next task (e.g. idle hlt) can
+     * take IRQs; restore the caller's IF when this task resumes.
+     */
+    flags = irq_save();
     if (prev->state == PROC_RUNNING) {
         prev->state = PROC_READY;
         ready_enqueue(prev);
     }
     next->state = PROC_RUNNING;
     next->time_slice = PROCESS_TIME_SLICE;
-    current = next;
-    next->state = PROC_RUNNING;
-    next->time_slice = PROCESS_TIME_SLICE;
+    cpu_set_current(next);
     set_kernel_stacks(next);
+    irq_enable();
     process_switch(prev, next);
+    irq_restore(flags);
 }
 
 void scheduler_tick(void)
 {
     process_t *p;
+    process_t *cur;
+    uint64_t flags;
 
-    if (!scheduler_ready || !current) return;
+    cur = cpu_current();
+    if (!scheduler_ready || !cur) return;
 
+    flags = irq_save();
     /* Wake sleepers */
     for (p = &table[0]; p < &table[PROCESS_MAX]; p++) {
         if (p->state == PROC_SLEEPING && timer_ticks() >= p->wake_tick) {
@@ -196,31 +237,39 @@ void scheduler_tick(void)
         }
     }
 
-    if (current->time_slice > 0) {
-        current->time_slice--;
+    if (cur->time_slice > 0) {
+        cur->time_slice--;
     }
-    if (current->time_slice == 0) {
+    if (cur->time_slice == 0) {
         if (ready_head != NULL) {
             need_resched = 1;
         } else {
-            current->time_slice = PROCESS_TIME_SLICE;
+            cur->time_slice = PROCESS_TIME_SLICE;
         }
     }
+    irq_restore(flags);
 }
 
 void scheduler_yield(void)
 {
     process_t *next;
+    process_t *cur;
+    uint64_t flags;
     if (!scheduler_ready) return;
+
+    flags = irq_save();
     next = ready_dequeue();
     if (!next) {
-        if (current) {
-            current->time_slice = PROCESS_TIME_SLICE;
+        cur = cpu_current();
+        if (cur) {
+            cur->time_slice = PROCESS_TIME_SLICE;
         }
         need_resched = 0;
+        irq_restore(flags);
         return;
     }
     need_resched = 0;
+    irq_restore(flags);
     switch_to(next);
 }
 
@@ -229,22 +278,24 @@ void scheduler_on_irq_exit(void)
     if (!need_resched) return;
     /*
      * Called after PIC EOI on the timer IRQ return path (IF still clear from
-     * the interrupt gate). Re-enable interrupts so the next task is not stuck
-     * in hlt with IRQs masked, switch, then CLI again before iretq.
+     * the interrupt gate). Do not STI before yield — that allowed nested timer
+     * IRQs to interleave mid-queue update. switch_to enables IF immediately
+     * before process_switch so the next task is not stuck with IRQs masked;
+     * when this task resumes, irq_restore keeps IF clear for iretq.
      */
-    __asm__ volatile("sti" ::: "memory");
     scheduler_yield();
-    __asm__ volatile("cli" ::: "memory");
+    irq_disable();
 }
 
 process_t *process_get_current(void)
 {
-    return current;
+    return cpu_current();
 }
 
 uint32_t process_get_current_pid(void)
 {
-    return current ? current->pid : 0;
+    process_t *cur = cpu_current();
+    return cur ? cur->pid : 0;
 }
 
 process_t *process_find_by_pid(uint32_t pid)
@@ -306,12 +357,17 @@ process_t *process_create_user(uint64_t entry, uint64_t user_stack, address_spac
 
 void process_exit(int32_t code)
 {
-    process_t *p = current;
+    process_t *p = cpu_current();
     process_t *next;
     process_t *candidate;
     process_t **pp;
     process_t *prev_link;
+    uint64_t flags;
     if (!p) return;
+
+    socket_close_owned_by(p->pid);
+
+    flags = irq_save();
     p->exit_code = code;
     p->state = PROC_ZOMBIE;
 
@@ -336,27 +392,33 @@ void process_exit(int32_t code)
         next = ready_dequeue();
     }
     if (!next) {
+        irq_restore(flags);
         for (;;) __asm__ volatile("hlt");
     }
-    current = next;
+    cpu_set_current(next);
     next->state = PROC_RUNNING;
     next->time_slice = PROCESS_TIME_SLICE;
     set_kernel_stacks(next);
     /* SYS_EXIT arrives with IF clear (FMASK); next task must not inherit that. */
-    __asm__ volatile("sti" ::: "memory");
+    irq_enable();
     process_switch(NULL, next);
 }
 
 int process_terminate(uint32_t pid)
 {
     process_t *p = process_find_by_pid(pid);
+    uint64_t flags;
     if (!p || p->pid == 0) return -1;
     if (p->protected) return -1;
-    if (p == current) {
+    if (p == cpu_current()) {
         process_exit(137);
         return 0;
     }
     if (p->state == PROC_UNUSED || p->state == PROC_ZOMBIE) return -1;
+
+    socket_close_owned_by(p->pid);
+
+    flags = irq_save();
     /* Remove from ready queue if present */
     {
         process_t **pp = &ready_head;
@@ -373,22 +435,29 @@ int process_terminate(uint32_t pid)
     }
     p->state = PROC_ZOMBIE;
     p->exit_code = 137;
+    irq_restore(flags);
     return 0;
 }
 
 void process_sleep_ticks(uint64_t ticks)
 {
-    if (!current) return;
-    current->wake_tick = timer_ticks() + ticks;
-    current->state = PROC_SLEEPING;
-    {
-        process_t *next = ready_dequeue();
-        if (!next) {
-            current->state = PROC_RUNNING;
-            return;
-        }
-        switch_to(next);
+    process_t *next;
+    process_t *cur;
+    uint64_t flags;
+    cur = cpu_current();
+    if (!cur) return;
+
+    flags = irq_save();
+    cur->wake_tick = timer_ticks() + ticks;
+    cur->state = PROC_SLEEPING;
+    next = ready_dequeue();
+    if (!next) {
+        cur->state = PROC_RUNNING;
+        irq_restore(flags);
+        return;
     }
+    irq_restore(flags);
+    switch_to(next);
 }
 
 void process_reap_zombies(void)
@@ -416,6 +485,7 @@ void process_wait_pid(uint32_t pid)
         process_t *next;
         process_t **pp;
         process_t *prev_link;
+        uint64_t flags;
 
         if (!p || p->state == PROC_ZOMBIE || p->state == PROC_UNUSED) {
             process_reap_zombies();
@@ -424,23 +494,29 @@ void process_wait_pid(uint32_t pid)
 
         /* Prefer the waited task so we do not stall behind idle's hlt. */
         if (p->state == PROC_READY) {
-            pp = &ready_head;
-            prev_link = NULL;
-            while (*pp) {
-                if (*pp == p) {
-                    *pp = p->next;
-                    if (ready_tail == p) ready_tail = prev_link;
-                    p->next = NULL;
-                    break;
+            flags = irq_save();
+            if (p->state == PROC_READY) {
+                pp = &ready_head;
+                prev_link = NULL;
+                while (*pp) {
+                    if (*pp == p) {
+                        *pp = p->next;
+                        if (ready_tail == p) ready_tail = prev_link;
+                        p->next = NULL;
+                        break;
+                    }
+                    prev_link = *pp;
+                    pp = &(*pp)->next;
                 }
-                prev_link = *pp;
-                pp = &(*pp)->next;
             }
+            irq_restore(flags);
             switch_to(p);
             continue;
         }
 
+        flags = irq_save();
         next = ready_dequeue();
+        irq_restore(flags);
         if (!next) {
             __asm__ volatile("hlt");
             continue;

@@ -51,6 +51,7 @@ $cSources = @(
     "uefi/mm/paging.c",
     "uefi/mm/heap.c",
     "uefi/mm/dma.c",
+    "uefi/cpu/cpu_local.c",
     "uefi/lib/string.c",
     "uefi/drivers/kbd.c",
     "uefi/drivers/console.c",

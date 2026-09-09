@@ -33,7 +33,8 @@ static int map_user_stack(address_space_t *as, uint64_t *stack_top_out)
         uint64_t phys = pmm_alloc_frame();
         if (!phys) return -1;
         memset(phys_to_virt(phys), 0, PAGE_SIZE);
-        if (map_user_page(as, virt, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
+        if (map_user_page(as, virt, phys,
+                          PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER | PAGE_NX) != 0) {
             return -1;
         }
     }
@@ -55,7 +56,9 @@ static uint64_t push_string(address_space_t *as, uint64_t sp, const char *s, uin
         uint64_t saved = read_cr3();
         address_space_switch(as);
         dst = (uint8_t *)(uintptr_t)sp;
+        user_access_begin();
         memcpy(dst, s, len + 1);
+        user_access_end();
         write_cr3(saved);
         address_space_switch(address_space_kernel());
     }
@@ -125,11 +128,13 @@ int process_exec(const char *path, int argc, const char **argv)
         address_space_switch(as);
         sp -= sizeof(uint64_t) * (uint64_t)(argc + 1);
         usp = (uint64_t *)(uintptr_t)sp;
+        user_access_begin();
         for (i = 0; i <= argc; i++) {
             usp[i] = argv_ptrs[i];
         }
         sp -= sizeof(uint64_t);
         *(uint64_t *)(uintptr_t)sp = (uint64_t)argc;
+        user_access_end();
         /* Align for entry: rsp % 16 == 8 before call; with argc at top we use rdi/rsi manually in crt */
         write_cr3(saved);
         address_space_switch(address_space_kernel());

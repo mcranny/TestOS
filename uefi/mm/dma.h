@@ -3,6 +3,13 @@
 
 #include "types.h"
 
+/*
+ * DMA policy: all dma_alloc_* buffers are constrained to physical addresses
+ * below 4 GiB so 32-bit-address bus masters (AHCI/NVMe/e1000/xHCI) stay safe.
+ * General pmm_alloc_* may return frames above 4 GiB.
+ */
+#define DMA_ZONE_MAX_PHYS (4ULL * 1024ULL * 1024ULL * 1024ULL)
+
 typedef struct dma_buffer
 {
     uint64_t phys;

@@ -1,6 +1,7 @@
 #include "mm/heap.h"
 #include "mm/pmm.h"
 #include "platform.h"
+#include "sync/spinlock.h"
 
 #define HEAP_MAGIC        0x48454150U /* 'HEAP' */
 #define HEAP_FOOTER_MAGIC 0xF007F007U
@@ -19,6 +20,7 @@ static uint8_t *heap_end;
 static heap_block_t *head_block;
 static uint64_t heap_total_bytes;
 static uint64_t heap_used_bytes;
+static spinlock_t heap_lock;
 
 static size_t heap_align_payload(size_t size)
 {
@@ -143,14 +145,18 @@ void *kmalloc(size_t size)
 {
     heap_block_t *block;
     size_t payload;
+    uint64_t flags;
+    void *result = NULL;
 
     if (size == 0 || head_block == NULL) {
         return NULL;
     }
 
     payload = heap_align_payload(size);
+    flags = spin_lock_irqsave(&heap_lock);
     for (block = head_block; block != NULL; block = block->next) {
         if (!heap_check_block(block)) {
+            spin_unlock_irqrestore(&heap_lock, flags);
             panic("heap: corruption detected");
         }
         if (!block->free || block->size < payload) {
@@ -160,27 +166,34 @@ void *kmalloc(size_t size)
         heap_split_block(block, payload);
         heap_write_footer(block);
         heap_used_bytes += (uint64_t)heap_block_bytes(block->size);
-        return (uint8_t *)block + sizeof(heap_block_t);
+        result = (uint8_t *)block + sizeof(heap_block_t);
+        break;
     }
-    return NULL;
+    spin_unlock_irqrestore(&heap_lock, flags);
+    return result;
 }
 
 void kfree(void *pointer)
 {
     heap_block_t *block;
+    uint64_t flags;
 
     if (pointer == NULL || head_block == NULL) {
         return;
     }
 
     block = (heap_block_t *)((uint8_t *)pointer - sizeof(heap_block_t));
+    flags = spin_lock_irqsave(&heap_lock);
     if ((uint8_t *)block < heap_start || (uint8_t *)block >= heap_end) {
+        spin_unlock_irqrestore(&heap_lock, flags);
         return;
     }
     if (!heap_check_block(block) || block->free) {
         if (block->free) {
+            spin_unlock_irqrestore(&heap_lock, flags);
             return;
         }
+        spin_unlock_irqrestore(&heap_lock, flags);
         panic("heap: corruption detected");
     }
 
@@ -191,6 +204,7 @@ void kfree(void *pointer)
         heap_used_bytes = 0;
     }
     heap_coalesce();
+    spin_unlock_irqrestore(&heap_lock, flags);
 }
 
 uint64_t heap_get_start(void)

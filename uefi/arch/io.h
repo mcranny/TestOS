@@ -58,6 +58,29 @@ static inline void write_cr3(uint64_t value)
     __asm__ volatile("mov %0, %%cr3" : : "r"(value) : "memory");
 }
 
+static inline uint64_t read_cr4(void)
+{
+    uint64_t value;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(value));
+    return value;
+}
+
+static inline void write_cr4(uint64_t value)
+{
+    __asm__ volatile("mov %0, %%cr4" : : "r"(value) : "memory");
+}
+
+/* Allow/forbid supervisor access to user pages while CR4.SMAP is set. */
+static inline void user_access_begin(void)
+{
+    __asm__ volatile("stac" ::: "memory");
+}
+
+static inline void user_access_end(void)
+{
+    __asm__ volatile("clac" ::: "memory");
+}
+
 static inline void irq_enable(void)
 {
     __asm__ volatile("sti" ::: "memory");
@@ -66,6 +89,19 @@ static inline void irq_enable(void)
 static inline void irq_disable(void)
 {
     __asm__ volatile("cli" ::: "memory");
+}
+
+/* Save RFLAGS and clear IF. Nested save/restore is safe (inner restore keeps IF clear). */
+static inline uint64_t irq_save(void)
+{
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags)
+{
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory", "cc");
 }
 
 #endif

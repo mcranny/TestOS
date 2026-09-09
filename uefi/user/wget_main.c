@@ -33,7 +33,8 @@ int main(int argc, char **argv)
     char req[192];
     unsigned ri = 0;
     char buf[1500];
-    char body[1400];
+    /* HTTP_BODY_LEN (1400) + typical response headers (~256+). */
+    char body[2048];
     unsigned body_len = 0;
     int header_done = 0;
     unsigned header_end = 0;

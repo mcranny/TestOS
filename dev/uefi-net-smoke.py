@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""UEFI networking smoke: DHCP/config, ping, DNS, TCP echo, HTTP, wget→TFS."""
+"""UEFI networking smoke: ifconfig, DHCP path, ping, wget size, TCP echo+PCAP, HTTP.
+
+What this proves under QEMU/slirp (not claimed elsewhere in CI):
+  - Structured ifconfig status lines (not bare argv echo of 10.0.2.15)
+  - Boot DHCP ACK vs static-fallback WARN (paths distinguished)
+  - ICMP echo reply from gateway
+  - Guest wget of guest HTTP with exact body length (HTTP_BODY_LEN=1400)
+  - Host→guest TCP echo (25×1021B) via QEMU hostfwd
+  - PCAP handshake/data/FIN for that echo (tcp-pcap-check.py)
+
+Not covered: TESTOS_TCP_SELFTEST / active-open retransmit hooks (compile-time i386-era).
+"""
 from __future__ import annotations
 
 import os
@@ -15,7 +26,11 @@ VARS = ROOT / "build" / "ovmf-vars.fd"
 IMG = ROOT / "build" / "testos-usb-local.img"
 DATA = ROOT / "build" / "uefi-net-data.img"
 OUT = ROOT / "build" / "uefi-net-smoke.log"
+PCAP = ROOT / "build" / "uefi-net-tcp.pcap"
 PORT = int(os.environ.get("TESTOS_SERIAL_PORT", "5557"))
+
+# Must match uefi/net/http.c HTTP_BODY_LEN (guest self-served GET / body).
+HTTP_BODY_LEN = 1400
 
 
 def resolve_qemu() -> pathlib.Path:
@@ -54,6 +69,10 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;?=]*[A-Za-z]", "", text)
 
 
+def normalize(text: str) -> str:
+    return strip_ansi(text).replace("\r\n", "\n").replace("\r", "\n")
+
+
 def drain(sock: socket.socket, buf: bytearray, settle: float) -> None:
     sock.settimeout(0.1)
     end = time.time() + settle
@@ -89,10 +108,14 @@ def send_cmd(sock: socket.socket, buf: bytearray, cmd: str, settle: float = 1.2)
     drain(sock, buf, settle)
 
 
-def check(text: str, needle: str, name: str) -> bool:
-    ok = needle in text
+def check(ok: bool, name: str) -> bool:
     print(f"  [{'OK' if ok else 'FAIL'}] {name}")
     return ok
+
+
+def check_re(text: str, pattern: str, name: str) -> bool:
+    hit = re.search(pattern, text, re.MULTILINE) is not None
+    return check(hit, name)
 
 
 def main() -> int:
@@ -105,6 +128,8 @@ def main() -> int:
     DATA.write_bytes(b"\x00" * (16 * 1024 * 1024))
     if not VARS.exists() or VARS.stat().st_size == 0:
         VARS.write_bytes(b"\x00" * code.stat().st_size)
+    if PCAP.exists():
+        PCAP.unlink()
 
     args = [
         str(qemu),
@@ -118,6 +143,7 @@ def main() -> int:
         "-drive", f"file={DATA},format=raw,if=none,id=data",
         "-device", "ide-hd,drive=data,bus=ide.0",
         "-netdev", "user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::12346-:12346",
+        "-object", f"filter-dump,id=tcpdump,netdev=net0,file={PCAP}",
         "-device", "e1000e,netdev=net0",
         "-device", "bochs-display",
         "-vga", "none",
@@ -147,23 +173,63 @@ def main() -> int:
         if not recv_until(sock, buf, b"/# ", 90.0):
             raise RuntimeError("shell prompt not reached")
 
-        send_cmd(sock, buf, "netstat", 2.0)
+        # ifconfig labels cannot be satisfied by typing argv that contains 10.0.2.15.
+        send_cmd(sock, buf, "ifconfig", 2.0)
         send_cmd(sock, buf, "ping 10.0.2.2 2", 8.0)
-        send_cmd(sock, buf, "dns 10.0.2.2", 3.0)
+        send_cmd(sock, buf, "dns 10.0.2.3", 3.0)
         send_cmd(sock, buf, "wget 10.0.2.15:8080/ /http-dl.txt", 12.0)
         send_cmd(sock, buf, "cat /http-dl.txt", 2.0)
         send_cmd(sock, buf, "arp", 1.5)
+        send_cmd(sock, buf, "netstat", 2.0)
 
-        text = strip_ansi(buf.decode("latin1", errors="replace"))
+        text = normalize(buf.decode("latin1", errors="replace"))
         OUT.write_text(text, encoding="utf-8")
 
         print("guest serial checks...")
-        ok &= check(text, "10.0.2.15", "guest IP configured")
-        ok &= check(text, "10.0.2.2", "gateway present")
-        ok &= check(text, "Reply from 10.0.2.2", "ping gateway")
-        ok &= check(text, "Interface: e1000e0", "netstat iface")
-        ok &= check(text, "wget: saved", "wget download")
-        ok &= check(text, "TestOS HTTP Server", "wget body in TFS")
+        dhcp_ack = "DHCP: ACK received" in text
+        dhcp_fail = "DHCP failed; using static defaults" in text
+        ok &= check(dhcp_ack and not dhcp_fail, "DHCP ACK (not static fallback)")
+        ok &= check_re(
+            text,
+            r"^Interface:\s+e1000e0\s*$",
+            "ifconfig Interface: e1000e0",
+        )
+        ok &= check_re(
+            text,
+            r"^MAC:\s+[0-9a-f]{2}(?::[0-9a-f]{2}){5}\s*$",
+            "ifconfig MAC line",
+        )
+        ok &= check_re(
+            text,
+            r"^IP:\s+10\.0\.2\.15\s*$",
+            "ifconfig IP: 10.0.2.15",
+        )
+        ok &= check_re(
+            text,
+            r"^Mask:\s+255\.255\.255\.0\s*$",
+            "ifconfig Mask line",
+        )
+        ok &= check_re(
+            text,
+            r"^Gateway:\s+10\.0\.2\.2\s*$",
+            "ifconfig Gateway: 10.0.2.2",
+        )
+        ok &= check_re(
+            text,
+            r"^DNS:\s+10\.0\.2\.3\s*$",
+            "ifconfig DNS: 10.0.2.3",
+        )
+        ok &= check_re(
+            text,
+            r"^RX:\s+[1-9][0-9]*\s+packets\s*$",
+            "ifconfig RX packets > 0",
+        )
+        ok &= check("Reply from 10.0.2.2" in text, "ping gateway reply")
+        ok &= check(
+            f"wget: saved {HTTP_BODY_LEN} bytes" in text,
+            f"wget saved exactly {HTTP_BODY_LEN} bytes",
+        )
+        ok &= check("TestOS HTTP Server" in text, "wget body in TFS")
 
         print("host TCP echo interop...")
         tcp = subprocess.run(
@@ -171,8 +237,18 @@ def main() -> int:
             cwd=str(ROOT),
             check=False,
         )
-        print(f"  [{'OK' if tcp.returncode == 0 else 'FAIL'}] tcp-interop")
-        ok &= tcp.returncode == 0
+        ok &= check(tcp.returncode == 0, "tcp-interop (25×1021B echo)")
+
+        print("TCP PCAP checks...")
+        if not PCAP.is_file() or PCAP.stat().st_size == 0:
+            ok &= check(False, f"pcap capture present ({PCAP.name})")
+        else:
+            pcap = subprocess.run(
+                [sys.executable, str(ROOT / "dev" / "tcp-pcap-check.py"), str(PCAP)],
+                cwd=str(ROOT),
+                check=False,
+            )
+            ok &= check(pcap.returncode == 0, "tcp-pcap handshake/data/FIN")
 
         print("host HTTP interop...")
         http = subprocess.run(
@@ -180,8 +256,7 @@ def main() -> int:
             cwd=str(ROOT),
             check=False,
         )
-        print(f"  [{'OK' if http.returncode == 0 else 'FAIL'}] http-interop")
-        ok &= http.returncode == 0
+        ok &= check(http.returncode == 0, "http-interop")
 
         return 0 if ok else 1
     finally:

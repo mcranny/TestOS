@@ -6,6 +6,11 @@
 /*
  * Syscall entry (no swapgs — single-CPU hobby kernel).
  * On entry: rax=nr, rdi/rsi/rdx=args, rcx=user RIP, r11=user RFLAGS, rsp=user RSP.
+ *
+ * current_syscall_user_rsp is a per-CPU live slot for the in-flight user RSP.
+ * set_kernel_stacks() spills/reloads it from process_t.syscall_user_rsp on
+ * every switch so concurrent syscalls cannot clobber each other (H7).
+ * current_syscall_kernel_rsp is likewise refreshed per switch.
  */
 syscall_entry:
     mov %rsp, current_syscall_user_rsp(%rip)
@@ -70,5 +75,6 @@ syscall_entry:
 .align 8
 current_syscall_kernel_rsp:
     .quad 0
+/* Per-CPU live slot; durable copy lives in process_t.syscall_user_rsp (H7). */
 current_syscall_user_rsp:
     .quad 0

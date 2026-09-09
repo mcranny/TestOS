@@ -10,6 +10,8 @@
 #define AHCI_MAX_PORTS           32U
 #define AHCI_MAX_DISKS           4U
 #define AHCI_SECTOR_SIZE         512U
+#define AHCI_DMA_PAGE_SIZE       4096U
+#define AHCI_MAX_DMA_SECTORS     (AHCI_DMA_PAGE_SIZE / AHCI_SECTOR_SIZE)
 #define AHCI_MIN_SECTORS         2048U
 #define AHCI_CMD_SLOTS           32U
 #define AHCI_SLOT                0U
@@ -234,6 +236,55 @@ static int ahci_port_wait_ready(ahci_port_t *port)
     return 0;
 }
 
+/* Abort a hung slot-0 command so the next issue is not stuck on PxCI. */
+static void ahci_port_recover(ahci_port_t *port)
+{
+    uint32_t cmd;
+    uint32_t timeout = AHCI_TIMEOUT;
+
+    cmd = ahci_port_read(port, AHCI_PxCMD);
+    cmd &= ~AHCI_PxCMD_ST;
+    ahci_port_write(port, AHCI_PxCMD, cmd);
+
+    while (timeout-- > 0) {
+        cmd = ahci_port_read(port, AHCI_PxCMD);
+        if ((cmd & AHCI_PxCMD_CR) == 0) {
+            break;
+        }
+    }
+
+    ahci_port_write(port, AHCI_PxIS, 0xFFFFFFFFU);
+    ahci_port_write(port, AHCI_PxSERR, 0xFFFFFFFFU);
+
+    /* If the device is still busy after abort, COMRESET via SCTL.DET. */
+    if ((ahci_port_read(port, AHCI_PxTFD) & (AHCI_PxTFD_BSY | AHCI_PxTFD_DRQ)) != 0) {
+        ahci_port_write(port, AHCI_PxSCTL, 0x01U);
+        timeout = 1000U;
+        while (timeout-- > 0) {
+            __asm__ volatile("nop");
+        }
+        ahci_port_write(port, AHCI_PxSCTL, 0);
+        timeout = AHCI_TIMEOUT;
+        while (timeout-- > 0) {
+            if ((ahci_port_read(port, AHCI_PxSSTS) & AHCI_PxSSTS_DET_MASK) ==
+                AHCI_PxSSTS_DET_PRESENT) {
+                break;
+            }
+        }
+        ahci_port_write(port, AHCI_PxSERR, 0xFFFFFFFFU);
+        ahci_port_write(port, AHCI_PxIS, 0xFFFFFFFFU);
+    }
+
+    cmd = ahci_port_read(port, AHCI_PxCMD);
+    if ((cmd & AHCI_PxCMD_FRE) == 0) {
+        cmd |= AHCI_PxCMD_FRE;
+        ahci_port_write(port, AHCI_PxCMD, cmd);
+    }
+    cmd = ahci_port_read(port, AHCI_PxCMD);
+    cmd |= AHCI_PxCMD_ST;
+    ahci_port_write(port, AHCI_PxCMD, cmd);
+}
+
 static int ahci_transfer(
     ahci_port_t *port,
     uint32_t lba,
@@ -270,6 +321,9 @@ static int ahci_issue_command(ahci_port_t *port, int write_cmd)
             goto done;
         }
     }
+
+    /* Timed out with PxCI still set — recover so slot 0 can be reused. */
+    ahci_port_recover(port);
 done:
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory", "cc");
     return result;
@@ -385,7 +439,8 @@ static int ahci_transfer(
     uint32_t bytes;
     uint32_t sector;
 
-    if (count == 0 || count > 255U) {
+    /* Single 4 KiB DMA page; refuse transfers that would overrun it. */
+    if (count == 0 || count > AHCI_MAX_DMA_SECTORS) {
         return 0;
     }
 

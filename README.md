@@ -12,7 +12,7 @@ x86-64 operating system with UEFI boot. Runs under QEMU or from USB.
 - Networking: E1000e, DHCP, DNS, ARP/IPv4/ICMP/UDP/TCP, HTTP server on port 8080
 - User-space socket syscalls and network utilities (`/dns`, `/wget`, `/tcp`, `/udp`)
 - xHCI controller bring-up; PS/2 keyboard remains the interactive input path
-- GitHub Actions smoke checks for ATA, AHCI, NVMe, HTTP, and networking
+- GitHub Actions smoke checks for ATA/AHCI/NVMe (+ `fsck`), HTTP, and UEFI networking (DHCP/ifconfig, wget size, TCP echo+PCAP)
 
 ## Run
 
@@ -47,14 +47,22 @@ python dev/uefi-shell-smoke.py ahci
 python dev/uefi-shell-smoke.py nvme
 python dev/uefi-http-smoke.py
 python dev/uefi-net-smoke.py
+python dev/check-storage-dma-cap.py
 ```
+
+CI (`.github/workflows/uefi-pr.yml`) runs the UEFI smokes above. Legacy i386 wrappers
+`dev/tcp-interop-test.sh` and `dev/http-interop-test.sh` exit with an error; use the
+UEFI Python smokes instead. Kernel `TESTOS_TCP_SELFTEST` is not part of UEFI CI.
+
+TODO: real-hardware CI and boot-from-NVMe (data disk only today) are out of scope for
+these smokes; QEMU/slirp remains the deterministic path.
 
 ## Network shell commands
 
 After boot, DHCP configures `e1000e0` (falls back to `10.0.2.15` on QEMU user-net):
 
 ```text
-ifconfig / netstat / arp / route / dhcp / dns <host> / ping <ip|host> / wget <url> <file>
+ifconfig / netstat / arp / route / dhcp / dns|nslookup <host> / ping <ip|host> / wget <url> <file> / netrx
 ```
 
 Userland programs (seeded to TFS): `./dns`, `./wget`, `./tcp`, `./udp`.

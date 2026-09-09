@@ -1,5 +1,6 @@
 #include "socket.h"
 #include "tcp.h"
+#include "task/process.h"
 #include "lib/string.h"
 
 #define SOCKET_PENDING_MAX 4U
@@ -10,6 +11,7 @@ typedef enum { SOCKET_FREE, SOCKET_NEW, SOCKET_BOUND, SOCKET_LISTENING,
 typedef struct {
     uint16_t generation;
     socket_state_t state;
+    uint32_t owner_pid;
     uint16_t port, remote_port;
     ipv4_addr_t remote_ip;
     uint8_t backlog, pending_count;
@@ -20,7 +22,7 @@ typedef struct {
 static socket_t sockets[SOCKET_MAX];
 
 static int encode(uint32_t i) { return (int)((sockets[i].generation << 8) | (i + 1U)); }
-static socket_t *get(int handle)
+static socket_t *lookup(int handle)
 {
     uint32_t slot;
     if (handle <= 0) return NULL;
@@ -29,6 +31,26 @@ static socket_t *get(int handle)
     slot--;
     if (sockets[slot].state == SOCKET_FREE || sockets[slot].generation != ((uint32_t)handle >> 8)) return NULL;
     return &sockets[slot];
+}
+static int caller_may_use(const socket_t *s)
+{
+    process_t *p;
+    if (s == NULL) return 0;
+    p = process_get_current();
+    /* Kernel / shell context may touch any socket (http_poll, shell wget). */
+    if (p == NULL || !p->is_user) return 1;
+    return p->pid == s->owner_pid;
+}
+static socket_t *get(int handle)
+{
+    socket_t *s = lookup(handle);
+    if (s == NULL || !caller_may_use(s)) return NULL;
+    return s;
+}
+static uint32_t current_owner_pid(void)
+{
+    process_t *p = process_get_current();
+    return p ? p->pid : 0U;
 }
 static socket_t *find_listener(uint16_t port)
 {
@@ -48,9 +70,23 @@ static int allocate(void)
     for (i = 0; i < SOCKET_MAX; i++) if (sockets[i].state == SOCKET_FREE) {
         uint16_t next = (uint16_t)(sockets[i].generation + 1U);
         memset(&sockets[i], 0, sizeof(sockets[i])); sockets[i].generation = next ? next : 1U; sockets[i].state = SOCKET_NEW;
+        sockets[i].owner_pid = current_owner_pid();
         return encode(i);
     }
     return SOCKET_ERROR;
+}
+static int close_internal(int h, int force)
+{
+    socket_t *s = lookup(h); uint8_t i;
+    if (!s) return SOCKET_ERROR;
+    if (s->state == SOCKET_LISTENING) (void)tcp_unregister_listener(s->port);
+    if (s->state == SOCKET_ESTABLISHED) {
+        if (!tcp_close(s->remote_ip, s->remote_port, s->port) && !force) {
+            return SOCKET_WOULD_BLOCK;
+        }
+    }
+    for (i = 0; i < s->pending_count; i++) (void)close_internal(s->pending[i], force);
+    s->state = SOCKET_FREE; return 1;
 }
 static void on_established(ipv4_addr_t ip, uint16_t local, uint16_t remote)
 {
@@ -58,16 +94,19 @@ static void on_established(ipv4_addr_t ip, uint16_t local, uint16_t remote)
     if (child && child->state == SOCKET_CONNECTING) { child->state = SOCKET_ESTABLISHED; return; }
     if (!listener || listener->pending_count >= listener->backlog) { (void)tcp_close(ip, remote, local); return; }
     h = allocate(); if (h < 0) { (void)tcp_close(ip, remote, local); return; }
-    child = get(h); child->state = SOCKET_ESTABLISHED; child->port = local; child->remote_port = remote; child->remote_ip = ip;
+    child = lookup(h); child->state = SOCKET_ESTABLISHED; child->port = local; child->remote_port = remote; child->remote_ip = ip;
+    child->owner_pid = listener->owner_pid;
     listener->pending[listener->pending_count++] = h;
 }
-static void on_data(ipv4_addr_t ip, uint16_t local, uint16_t remote, const uint8_t *data, uint16_t length)
+static int on_data(ipv4_addr_t ip, uint16_t local, uint16_t remote, const uint8_t *data, uint16_t length)
 {
     socket_t *s = find_peer(ip, local, remote); uint16_t room;
-    if (!s || !data) return;
+    if (!s || !data) return 0;
     room = (uint16_t)(SOCKET_RX_MAX - s->rx_end);
-    if (length > room) { s->state = SOCKET_FAILED; return; }
+    /* Refuse rather than ACK-then-drop; tcp_input only advances rcv_nxt on success. */
+    if (length > room) return 0;
     memcpy(&s->rx[s->rx_end], data, length); s->rx_end = (uint16_t)(s->rx_end + length);
+    return 1;
 }
 static void on_closed(ipv4_addr_t ip, uint16_t local, uint16_t remote, int failed)
 {
@@ -135,12 +174,20 @@ int socket_recv(int h, void *data, uint16_t cap)
 }
 int socket_close(int h)
 {
-    socket_t *s = get(h); uint8_t i;
+    socket_t *s = get(h);
     if (!s) return SOCKET_ERROR;
-    if (s->state == SOCKET_LISTENING) (void)tcp_unregister_listener(s->port);
-    if (s->state == SOCKET_ESTABLISHED && !tcp_close(s->remote_ip, s->remote_port, s->port)) return SOCKET_WOULD_BLOCK;
-    for (i = 0; i < s->pending_count; i++) (void)socket_close(s->pending[i]);
-    s->state = SOCKET_FREE; return 1;
+    return close_internal(h, 0);
+}
+
+void socket_close_owned_by(uint32_t pid)
+{
+    uint32_t i;
+    if (pid == 0U) return;
+    for (i = 0; i < SOCKET_MAX; i++) {
+        if (sockets[i].state != SOCKET_FREE && sockets[i].owner_pid == pid) {
+            (void)close_internal(encode(i), 1);
+        }
+    }
 }
 
 uint32_t socket_count_active(void)

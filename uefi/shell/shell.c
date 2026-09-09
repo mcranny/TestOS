@@ -136,13 +136,13 @@ static void shell_help(void)
     console_puts("  sleep    - block for N timer ticks\n");
     console_puts("  ps       - list processes\n");
     console_puts("  kill     - terminate a process\n");
+    console_puts("  dns      - resolve hostname (or nslookup)\n");
     console_puts("  netrx    - poll E1000 for received Ethernet frames\n");
     console_puts("  ifconfig - show/set interface configuration\n");
     console_puts("  ip       - alias for ifconfig\n");
     console_puts("  route    - show/set default gateway\n");
     console_puts("  arp      - show/delete ARP cache\n");
     console_puts("  dhcp     - renew DHCP lease\n");
-    console_puts("  dns      - resolve a hostname (A record)\n");
     console_puts("  netstat  - network interface and socket status\n");
     console_puts("  ping     - ICMP echo request to an IPv4 address or host\n");
     console_puts("  udp      - send a UDP datagram\n");
@@ -802,7 +802,8 @@ static void shell_wget(const char *args)
     char req[192];
     uint32_t ri = 0;
     uint8_t buf[1500];
-    uint8_t body[1400];
+    /* HTTP_BODY_LEN (1400) + typical response headers (~256+). */
+    uint8_t body[2048];
     uint32_t body_len = 0;
     uint32_t start;
     int header_done = 0;

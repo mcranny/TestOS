@@ -42,6 +42,16 @@ void isr_dispatch(struct interrupt_frame *frame)
         if (frame->vector == 14) {
             log_hex64("CR2=", read_cr2());
         }
+        /* Ring-3 faults kill the process; kernel faults still panic. */
+        if ((frame->cs & 3) == 3) {
+            process_t *p = process_get_current();
+            if (p && !p->protected) {
+                log_warn("terminating user process after exception");
+                log_hex64("PID=", p->pid);
+                /* Never returns — same path as SYS_EXIT / process_terminate. */
+                process_exit(139);
+            }
+        }
         panic("CPU exception");
     }
 

@@ -20,6 +20,8 @@ int socket_connect(int handle, ipv4_addr_t address, uint16_t port, uint16_t loca
 int socket_send(int handle, const void *data, uint16_t length);
 int socket_recv(int handle, void *data, uint16_t capacity);
 int socket_close(int handle);
+/* Force-close every socket owned by pid (process exit / terminate). */
+void socket_close_owned_by(uint32_t pid);
 
 typedef struct
 {

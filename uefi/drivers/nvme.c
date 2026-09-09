@@ -8,6 +8,8 @@
 
 #define NVME_BAR_INDEX           0U
 #define NVME_SECTOR_SIZE         512U
+#define NVME_DMA_PAGE_SIZE       4096U
+#define NVME_MAX_DMA_SECTORS     (NVME_DMA_PAGE_SIZE / NVME_SECTOR_SIZE)
 #define NVME_MIN_SECTORS         2048U
 #define NVME_TIMEOUT             1000000U
 #define NVME_ADMIN_QSIZE         16U
@@ -357,7 +359,10 @@ static int nvme_read(block_device_t *device, uint32_t lba, uint32_t count, void 
     uint32_t bytes;
     (void)device;
 
-    if (!nvme_ctrl.ready || count == 0 || count > 256U) {
+    /* PRP1 only; refuse multi-page transfers until PRP2/list exists. */
+    if (!nvme_ctrl.ready || count == 0 ||
+        count > NVME_MAX_DMA_SECTORS ||
+        (count * nvme_ctrl.block_size) > NVME_DMA_PAGE_SIZE) {
         return 0;
     }
 
@@ -383,7 +388,9 @@ static int nvme_write(block_device_t *device, uint32_t lba, uint32_t count, cons
     uint32_t bytes;
     (void)device;
 
-    if (!nvme_ctrl.ready || count == 0 || count > 256U) {
+    if (!nvme_ctrl.ready || count == 0 ||
+        count > NVME_MAX_DMA_SECTORS ||
+        (count * nvme_ctrl.block_size) > NVME_DMA_PAGE_SIZE) {
         return 0;
     }
 

@@ -100,7 +100,8 @@ uint64_t pci_bar_size(device_t *device, uint8_t bar_index)
         if (mask == 0) {
             return 0;
         }
-        size = (~(uint64_t)mask) + 1ULL;
+        /* Invert as uint32_t first; casting to uint64_t before ~ yields ~2^64. */
+        size = (uint64_t)((~mask) + 1U);
         return size & 0xFFFFULL;
     }
 
@@ -108,7 +109,7 @@ uint64_t pci_bar_size(device_t *device, uint8_t bar_index)
     if (mask == 0) {
         return 0;
     }
-    return (~(uint64_t)mask) + 1ULL;
+    return (uint64_t)((~mask) + 1U);
 }
 
 int pci_decode_bar(device_t *device, uint8_t bar_index, pci_bar_info_t *out)

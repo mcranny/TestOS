@@ -99,5 +99,7 @@ exec "${QEMU64}" \
   -device piix3-ide,id=ide \
   -drive file="${data}",format=raw,if=none,id=data \
   -device ide-hd,drive=data,bus=ide.0 \
+  -netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+  -device e1000e,netdev=net0 \
   -device bochs-display -vga none \
   -serial stdio

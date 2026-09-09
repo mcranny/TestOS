@@ -12,6 +12,10 @@
 #include "user/exec.h"
 #include "platform.h"
 #include "version.h"
+#include "ethernet.h"
+#include "icmp.h"
+#include "ipv4.h"
+#include "udp.h"
 
 #define LINE_MAX 256
 
@@ -119,6 +123,9 @@ static void shell_help(void)
     console_puts("  sleep    - block for N timer ticks\n");
     console_puts("  ps       - list processes\n");
     console_puts("  kill     - terminate a process\n");
+    console_puts("  netrx    - poll E1000 for received Ethernet frames\n");
+    console_puts("  ping     - ICMP echo request to an IPv4 address\n");
+    console_puts("  udp      - send a UDP datagram\n");
     console_puts("  fsck     - check filesystem consistency\n");
     console_puts("  reboot   - reboot the system\n");
     console_puts("  halt     - halt the CPU\n");
@@ -466,6 +473,245 @@ static void shell_calc(const char *args)
     }
 }
 
+static void shell_netrx(void)
+{
+    int frames;
+    char number[12];
+
+    frames = ethernet_poll();
+    if (frames == 0) {
+        console_puts("netrx: no frames\n");
+        return;
+    }
+
+    console_puts("netrx: frames=");
+    u32_to_dec((uint32_t)frames, number);
+    console_puts(number);
+    console_puts("\n");
+}
+
+static int shell_parse_ipv4(const char *text, ipv4_addr_t *out)
+{
+    uint32_t octets[4];
+    uint32_t i;
+    uint32_t value;
+
+    if (text == NULL || out == NULL) {
+        return 0;
+    }
+
+    text = skip_spaces(text);
+
+    for (i = 0; i < 4U; i++) {
+        if (*text < '0' || *text > '9') {
+            return 0;
+        }
+
+        value = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = (value * 10U) + (uint32_t)(*text - '0');
+            if (value > 255U) {
+                return 0;
+            }
+            text++;
+        }
+
+        octets[i] = value;
+
+        if (i < 3U) {
+            if (*text != '.') {
+                return 0;
+            }
+            text++;
+        }
+    }
+
+    text = skip_spaces(text);
+    if (*text != '\0') {
+        return 0;
+    }
+
+    *out = IPV4_ADDR(octets[0], octets[1], octets[2], octets[3]);
+    return 1;
+}
+
+static void shell_ping(const char *args)
+{
+    ipv4_addr_t dst;
+    char ip_str[16];
+    uint64_t start;
+    static uint16_t ping_seq = 1U;
+    const uint16_t ping_id = 0x544FU;
+    uint16_t seq;
+
+    args = skip_spaces(args);
+    if (*args == '\0') {
+        console_puts("usage: ping <ip>\n");
+        return;
+    }
+
+    if (!shell_parse_ipv4(args, &dst)) {
+        console_puts("ping: invalid IPv4 address\n");
+        return;
+    }
+
+    seq = ping_seq++;
+    if (ping_seq == 0U) {
+        ping_seq = 1U;
+    }
+
+    ipv4_addr_format(dst, ip_str);
+    console_puts("PING ");
+    console_puts(ip_str);
+    console_puts("\n");
+
+    icmp_arm_echo_wait(dst, ping_id, seq);
+    if (!icmp_send_echo_request(dst, ping_id, seq)) {
+        /* ARP may still be resolving; keep waiting for a reply. */
+    }
+
+    start = timer_get_ticks();
+    while ((timer_get_ticks() - start) < (3U * (uint64_t)TIMER_FREQUENCY)) {
+        (void)ethernet_poll();
+        if (icmp_echo_wait_done()) {
+            console_puts("Reply from ");
+            console_puts(ip_str);
+            console_puts("\n");
+            return;
+        }
+    }
+
+    console_puts("Request timed out\n");
+}
+
+static int shell_parse_u16(const char **text_inout, uint16_t *out)
+{
+    const char *text;
+    uint32_t value;
+
+    if (text_inout == NULL || *text_inout == NULL || out == NULL) {
+        return 0;
+    }
+
+    text = skip_spaces(*text_inout);
+    if (*text < '0' || *text > '9') {
+        return 0;
+    }
+
+    value = 0;
+    while (*text >= '0' && *text <= '9') {
+        value = (value * 10U) + (uint32_t)(*text - '0');
+        if (value > 65535U) {
+            return 0;
+        }
+        text++;
+    }
+
+    if (value == 0U) {
+        return 0;
+    }
+
+    *out = (uint16_t)value;
+    *text_inout = text;
+    return 1;
+}
+
+static int shell_parse_ipv4_prefix(const char **text_inout, ipv4_addr_t *out)
+{
+    uint32_t octets[4];
+    uint32_t i;
+    uint32_t value;
+    const char *text;
+
+    if (text_inout == NULL || *text_inout == NULL || out == NULL) {
+        return 0;
+    }
+
+    text = skip_spaces(*text_inout);
+
+    for (i = 0; i < 4U; i++) {
+        if (*text < '0' || *text > '9') {
+            return 0;
+        }
+
+        value = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = (value * 10U) + (uint32_t)(*text - '0');
+            if (value > 255U) {
+                return 0;
+            }
+            text++;
+        }
+
+        octets[i] = value;
+
+        if (i < 3U) {
+            if (*text != '.') {
+                return 0;
+            }
+            text++;
+        }
+    }
+
+    *out = IPV4_ADDR(octets[0], octets[1], octets[2], octets[3]);
+    *text_inout = text;
+    return 1;
+}
+
+static uint32_t shell_strlen(const char *s)
+{
+    uint32_t n = 0;
+    if (s == NULL) {
+        return 0;
+    }
+    while (s[n] != '\0') {
+        n++;
+    }
+    return n;
+}
+
+static void shell_udp(const char *args)
+{
+    ipv4_addr_t dst;
+    uint16_t port;
+    const char *message;
+    uint32_t message_len;
+    const uint16_t src_port = 50000U;
+
+    args = skip_spaces(args);
+    if (*args == '\0') {
+        console_puts("usage: udp <ip> <port> <message>\n");
+        return;
+    }
+
+    if (!shell_parse_ipv4_prefix(&args, &dst)) {
+        console_puts("udp: invalid IPv4 address\n");
+        return;
+    }
+
+    if (!shell_parse_u16(&args, &port)) {
+        console_puts("udp: invalid port\n");
+        return;
+    }
+
+    message = skip_spaces(args);
+    if (*message == '\0') {
+        console_puts("usage: udp <ip> <port> <message>\n");
+        return;
+    }
+
+    message_len = shell_strlen(message);
+    if (message_len > 512U) {
+        message_len = 512U;
+    }
+
+    if (udp_send(dst, port, src_port, message, (uint16_t)message_len)) {
+        console_puts("udp: sent\n");
+    } else {
+        console_puts("udp: failed\n");
+    }
+}
+
 static int shell_is_exec_path(const char *line)
 {
     return line[0] == '.' && line[1] == '/';
@@ -496,6 +742,9 @@ static void run_line(char *line)
     if (command_is(line, "cat")) { shell_cat(line + 3); return; }
     if (command_is(line, "ps")) { shell_ps(); return; }
     if (command_is(line, "kill")) { shell_kill(line + 4); return; }
+    if (command_is(line, "netrx")) { shell_netrx(); return; }
+    if (command_is(line, "ping")) { shell_ping(line + 4); return; }
+    if (command_is(line, "udp")) { shell_udp(line + 3); return; }
     if (command_is(line, "fsck")) { shell_fsck(); return; }
     if (command_is(line, "sleep")) { shell_sleep(line + 5); return; }
     if (command_is(line, "calc")) { shell_calc(line + 4); return; }

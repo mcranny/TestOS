@@ -10,6 +10,22 @@ void log_error(const char *msg);
 void log_hex64(const char *prefix, uint64_t value);
 void panic(const char *msg) __attribute__((noreturn));
 
+/* Compatibility logging for ported 32-bit networking code. */
+#ifndef DEBUG_NET
+#define DEBUG_NET 0
+#endif
+
+typedef enum {
+    KLOG_DEBUG,
+    KLOG_INFO,
+    KLOG_WARN,
+    KLOG_ERROR,
+    KLOG_PANIC
+} klog_level_t;
+
+void klog(klog_level_t level, const char *category, const char *message);
+void klog_uint(klog_level_t level, const char *category, const char *prefix, uint32_t value);
+
 void *phys_to_virt(uint64_t phys);
 uint64_t virt_to_phys(const void *virt);
 

@@ -9,6 +9,8 @@
 #include "drivers/device.h"
 #include "drivers/pci.h"
 #include "drivers/ata.h"
+#include "e1000.h"
+#include "ethernet.h"
 #include "arch/tss.h"
 #include "arch/gdt.h"
 #include "arch/idt.h"
@@ -101,8 +103,14 @@ void uefi_main(void)
     pic_unmask(0);
     pic_unmask(1);
 
+    console_puts("initializing e1000\n");
+    e1000_initialize();
+
     console_puts("BOOT: TestOS ready\n");
     irq_enable();
+
+    console_puts("probing network\n");
+    net_bootstrap();
 
     wait_ticks = timer_ticks();
     while (timer_ticks() - wait_ticks < 5) {

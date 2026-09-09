@@ -33,7 +33,7 @@ PYTHON ?= $(shell \
 
 UEFI_CFLAGS = --target=x86_64-unknown-none-elf -m64 -ffreestanding -fno-pie -fno-pic \
 	-fno-stack-protector -mno-red-zone -mcmodel=kernel -nostdlib -nostdinc \
-	-Wall -Wextra -Iuefi
+	-Wall -Wextra -Iuefi -Iuefi/net
 
 UEFI_C_SOURCES = \
 	uefi/kernel.c \
@@ -64,6 +64,17 @@ UEFI_C_SOURCES = \
 	uefi/user/syscall.c \
 	uefi/user/elf64.c \
 	uefi/user/exec.c \
+	uefi/net/e1000.c \
+	uefi/net/checksum.c \
+	uefi/net/mac.c \
+	uefi/net/ethernet.c \
+	uefi/net/arp.c \
+	uefi/net/ipv4.c \
+	uefi/net/icmp.c \
+	uefi/net/udp.c \
+	uefi/net/tcp.c \
+	uefi/net/socket.c \
+	uefi/net/http.c \
 	uefi/shell/shell.c
 
 UEFI_S_SOURCES = \

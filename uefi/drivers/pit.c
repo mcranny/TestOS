@@ -1,6 +1,8 @@
 #include "drivers/pit.h"
 #include "arch/io.h"
 #include "task/process.h"
+#include "tcp.h"
+#include "http.h"
 
 static volatile uint64_t ticks;
 static uint64_t hz = 100;
@@ -26,6 +28,8 @@ void timer_irq_handler(void *frame)
 {
     (void)frame;
     ticks++;
+    tcp_timer_tick();
+    http_poll();
     scheduler_tick();
 }
 

@@ -3,6 +3,7 @@
 #include "drivers/fb.h"
 #include "drivers/kbd.h"
 #include "platform.h"
+#include "ethernet.h"
 
 void console_init(void)
 {
@@ -39,6 +40,7 @@ char console_getchar(void)
 {
     for (;;) {
         fb_console_tick(timer_ticks());
+        (void)ethernet_poll();
         char c = kbd_getchar();
         if (c != 0) return c;
         if (serial_has_char()) {

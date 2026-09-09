@@ -78,6 +78,8 @@ def run_boot(fresh_data: bool, commands: list[tuple[str, float]]) -> str:
         "-device", "piix3-ide,id=ide",
         "-drive", f"file={DATA},format=raw,if=none,id=data",
         "-device", "ide-hd,drive=data,bus=ide.0",
+        "-netdev", "user,id=net0,hostfwd=tcp::8080-:8080",
+        "-device", "e1000e,netdev=net0",
         "-device", "bochs-display",
         "-vga", "none",
         "-serial", f"tcp:127.0.0.1:{PORT},server,nowait",

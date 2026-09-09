@@ -2,6 +2,7 @@
 #include "mm/pmm.h"
 #include "mm/heap.h"
 #include "arch/io.h"
+#include "arch/smap.h"
 #include "drivers/console.h"
 #include "lib/string.h"
 #include "platform.h"
@@ -400,11 +401,13 @@ void paging_init(const struct boot_info *boot)
                      : "a"(eax), "c"(ecx)
                      : "memory");
     cr4 = read_cr4();
+    smap_enabled = 0;
     if (ebx & (1U << 7)) {
         cr4 |= (1ULL << 20); /* SMEP */
     }
     if (ebx & (1U << 20)) {
         cr4 |= (1ULL << 21); /* SMAP */
+        smap_enabled = 1;
     }
     write_cr4(cr4);
 }

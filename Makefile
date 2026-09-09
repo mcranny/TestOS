@@ -47,6 +47,7 @@ UEFI_C_SOURCES = \
 	uefi/arch/gdt.c \
 	uefi/arch/idt.c \
 	uefi/arch/interrupts.c \
+	uefi/arch/smap.c \
 	uefi/mm/pmm.c \
 	uefi/mm/paging.c \
 	uefi/mm/heap.c \

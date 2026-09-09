@@ -2,6 +2,7 @@
 #include "task/process.h"
 #include "arch/gdt.h"
 #include "arch/io.h"
+#include "arch/smap.h"
 #include "drivers/console.h"
 #include "mm/paging.h"
 #include "platform.h"

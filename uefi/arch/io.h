@@ -70,22 +70,6 @@ static inline void write_cr4(uint64_t value)
     __asm__ volatile("mov %0, %%cr4" : : "r"(value) : "memory");
 }
 
-/* Allow/forbid supervisor access to user pages while CR4.SMAP is set.
- * STAC/CLAC #UD if SMAP is not enabled — guard on CR4.SMAP. */
-static inline void user_access_begin(void)
-{
-    if (read_cr4() & (1ULL << 21)) {
-        __asm__ volatile("stac" ::: "memory");
-    }
-}
-
-static inline void user_access_end(void)
-{
-    if (read_cr4() & (1ULL << 21)) {
-        __asm__ volatile("clac" ::: "memory");
-    }
-}
-
 static inline void irq_enable(void)
 {
     __asm__ volatile("sti" ::: "memory");

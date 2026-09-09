@@ -7,6 +7,7 @@
 #include "mm/pmm.h"
 #include "mm/heap.h"
 #include "arch/io.h"
+#include "arch/smap.h"
 #include "lib/string.h"
 #include "drivers/console.h"
 #include "platform.h"

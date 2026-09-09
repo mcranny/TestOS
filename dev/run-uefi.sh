@@ -66,14 +66,11 @@ if [[ ! -f "${vars}" ]]; then
     cp "build/ovmf/RELEASEX64_OVMF_VARS.fd" "${vars}"
   elif [[ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]]; then
     cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "${vars}"
+  elif [[ -f "/usr/share/OVMF/OVMF_VARS.fd" ]]; then
+    cp "/usr/share/OVMF/OVMF_VARS.fd" "${vars}"
   else
-    # Match code size with zeroed vars (works with QEMU edk2-x86_64-code.fd).
-    "${PYTHON}" - "${code}" "${vars}" <<'PY'
-import pathlib, sys
-code, vars_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-vars_path.write_bytes(b"\x00" * code.stat().st_size)
-print("created", vars_path)
-PY
+    # Prefer a real VARS template via helper; blank classic size is 256 KiB.
+    "${PYTHON}" "dev/ovmf_vars.py" "${code}" "${vars}"
   fi
 fi
 

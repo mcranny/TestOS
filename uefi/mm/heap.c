@@ -124,7 +124,10 @@ void heap_initialize(void)
     heap_total_bytes = 0;
     heap_used_bytes = 0;
 
-    phys = pmm_alloc_contiguous(HEAP_FRAMES);
+    phys = pmm_alloc_contiguous_below(HEAP_FRAMES, 4ULL * 1024ULL * 1024ULL * 1024ULL);
+    if (phys == 0) {
+        phys = pmm_alloc_contiguous(HEAP_FRAMES);
+    }
     if (phys == 0 || size < heap_block_bytes(HEAP_MIN_BLOCK_SIZE)) {
         panic("heap: contiguous allocation failed");
     }

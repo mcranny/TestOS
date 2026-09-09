@@ -376,6 +376,10 @@ void paging_user_probe(void)
 
 void paging_init(const struct boot_info *boot)
 {
+    uint32_t eax;
+    uint32_t ebx;
+    uint32_t ecx;
+    uint32_t edx;
     uint64_t cr4;
 
     (void)boot; /* HHDM/kernel bases live in pmm; phys_to_virt uses those. */
@@ -383,9 +387,24 @@ void paging_init(const struct boot_info *boot)
     clone_pml4_from_limine();
     paging_probe();
 
-    /* SMEP (bit20): block CPL0 fetch from user pages.
-     * SMAP (bit21): block CPL0 data access to user pages unless AC (stac/clac). */
+    /*
+     * Enable SMEP/SMAP only when CPUID reports them. Writing unsupported CR4
+     * bits #GPs on real hardware and appears as a hang right after
+     * "paging probe OK" (next line never prints).
+     * Leaf 7 EBX: SMEP=bit7, SMAP=bit20.
+     */
+    eax = 7;
+    ecx = 0;
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(eax), "c"(ecx)
+                     : "memory");
     cr4 = read_cr4();
-    cr4 |= (1ULL << 20) | (1ULL << 21);
+    if (ebx & (1U << 7)) {
+        cr4 |= (1ULL << 20); /* SMEP */
+    }
+    if (ebx & (1U << 20)) {
+        cr4 |= (1ULL << 21); /* SMAP */
+    }
     write_cr4(cr4);
 }

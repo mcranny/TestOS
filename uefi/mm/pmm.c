@@ -218,7 +218,7 @@ uint64_t pmm_alloc_contiguous_below(uint64_t frames, uint64_t max_phys)
     }
 
     if (frames <= limit) {
-        for (start = 1; start + frames <= limit; start++) {
+        for (start = 1; start + frames <= limit; ) {
             for (i = 0; i < frames; i++) {
                 if (pmm_test(start + i)) {
                     break;
@@ -231,6 +231,8 @@ uint64_t pmm_alloc_contiguous_below(uint64_t frames, uint64_t max_phys)
                 result = start * PAGE_SIZE;
                 break;
             }
+            /* Skip past the used frame instead of inching by one. */
+            start = start + i + 1ULL;
         }
     }
     spin_unlock_irqrestore(&pmm_lock, flags);

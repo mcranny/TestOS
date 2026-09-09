@@ -129,8 +129,10 @@ def qemu_storage_args(backend: str) -> list[str]:
 def run_boot(fresh_data: bool, commands: list[tuple[str, float]], backend: str = "ata") -> str:
     if fresh_data:
         DATA.write_bytes(b"\x00" * (16 * 1024 * 1024))
-    if not VARS.exists() or VARS.stat().st_size == 0:
-        VARS.write_bytes(b"\x00" * CODE.stat().st_size)
+    sys.path.insert(0, str(ROOT / "dev"))
+    from ovmf_vars import ensure_ovmf_vars
+
+    ensure_ovmf_vars(VARS, CODE)
 
     args = [
         str(QEMU),

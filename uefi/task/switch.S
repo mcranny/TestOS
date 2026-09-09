@@ -15,6 +15,7 @@
  *  8 name[32]
  * 40 kernel_rsp (u64)
  * 48 cr3 (u64)
+ * ... trailing fields (incl. syscall_user_rsp) must not shift 40/48.
  */
 process_switch:
     test %rdi, %rdi

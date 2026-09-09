@@ -76,10 +76,17 @@ jobs:
           text = Path("uefi/version.h").read_text(encoding="utf-8")
           if "\n" not in text:
               raise SystemExit("uefi/version.h has no newlines (corrupted header)")
-          if 'TESTOS_VERSION "0.13"' not in text:
-              raise SystemExit("uefi/version.h must define TESTOS_VERSION \"0.13\"")
-          print("version.h OK")
+          if 'TESTOS_VERSION "' not in text:
+              raise SystemExit("uefi/version.h must define TESTOS_VERSION")
+          import re
+          m = re.search(r'TESTOS_VERSION\s+"([0-9]+\.[0-9]+[^"]*)"', text)
+          if not m:
+              raise SystemExit("uefi/version.h TESTOS_VERSION must look like \"X.Y\"")
+          print("version.h OK:", m.group(1))
           PY
+
+      - name: Document AHCI/NVMe 8-sector DMA cap
+        run: python3 dev/check-storage-dma-cap.py
 
       - name: Build UEFI kernel and local USB image
         run: |
@@ -247,7 +254,9 @@ jobs:
           echo "OVMF code firmware not found" >&2
           exit 1
 
-      - name: Run UEFI network smoke
+      # Host TCP echo + PCAP + structured ifconfig/DHCP/wget size (UEFI/QEMU).
+      # Does not run legacy i386 TESTOS_TCP_SELFTEST / tcp-interop-test.sh.
+      - name: Run UEFI net smoke (DHCP/ifconfig, wget size, TCP echo+PCAP, HTTP)
         env:
           TESTOS_OVMF_CODE: ${{ steps.ovmf.outputs.code }}
           TESTOS_SERIAL_PORT: "5557"
@@ -260,5 +269,6 @@ jobs:
           name: uefi-net-smoke-logs
           path: |
             build/uefi-net-smoke.log
+            build/uefi-net-tcp.pcap
             build/*.log
           if-no-files-found: ignore

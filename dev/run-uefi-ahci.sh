@@ -26,10 +26,9 @@ PYTHON=${PYTHON:-python3}
 
 if [[ ! -f "${vars}" ]]; then
   cp "build/ovmf/RELEASEX64_OVMF_VARS.fd" "${vars}" 2>/dev/null || \
-    "${PYTHON}" - "${code}" "${vars}" <<PY
-import pathlib, sys
-pathlib.Path(sys.argv[2]).write_bytes(b"\\x00" * pathlib.Path(sys.argv[1]).stat().st_size)
-PY
+    cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "${vars}" 2>/dev/null || \
+    cp "/usr/share/OVMF/OVMF_VARS.fd" "${vars}" 2>/dev/null || \
+    "${PYTHON}" "dev/ovmf_vars.py" "${code}" "${vars}"
 fi
 
 test -f "${image}" || { echo "missing ${image}" >&2; exit 1; }

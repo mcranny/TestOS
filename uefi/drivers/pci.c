@@ -78,38 +78,94 @@ uint32_t pci_read_bar(device_t *device, uint8_t bar_index)
 uint64_t pci_bar_size(device_t *device, uint8_t bar_index)
 {
     uint8_t offset;
-    uint32_t original;
-    uint32_t mask;
+    uint8_t high_offset;
+    uint32_t original_low;
+    uint32_t original_high;
+    uint32_t mask_low;
+    uint32_t mask_high;
+    uint16_t original_cmd;
+    uint16_t sizing_cmd;
+    uint64_t mask64;
     uint64_t size;
     int is_io;
+    int is_64bit;
 
     if (device == NULL || bar_index > 5U) {
         return 0;
     }
 
     offset = (uint8_t)(PCI_BAR0 + (bar_index * 4U));
-    original = pci_read32(device->bus, device->device, device->function, offset);
-    is_io = (int)(original & 1U);
+    original_low = pci_read32(device->bus, device->device, device->function, offset);
+    is_io = (int)(original_low & 1U);
+    is_64bit = 0;
+    original_high = 0;
+    high_offset = (uint8_t)(offset + 4U);
+
+    if (!is_io) {
+        is_64bit = (((original_low >> 1) & 0x3U) == 0x2U) ? 1 : 0;
+        if (is_64bit) {
+            if (bar_index >= 5U) {
+                return 0;
+            }
+            original_high = pci_read32(device->bus, device->device, device->function, high_offset);
+        }
+    }
+
+    /*
+     * Spec-cleaner: clear MEM/IO decode while sizing so the all-ones probe is
+     * not claimed as a live mapping. Callers (driver probe) size BARs before
+     * enabling bus mastering / programming the device, so a brief disable is
+     * safe with the existing init order. Restore BARs before COMMAND so decode
+     * re-enable sees the original bases.
+     */
+    original_cmd = pci_read16(device->bus, device->device, device->function, PCI_COMMAND);
+    sizing_cmd = (uint16_t)(original_cmd & ~(uint16_t)(PCI_COMMAND_IO | PCI_COMMAND_MEMORY));
+    if (sizing_cmd != original_cmd) {
+        pci_write16(device->bus, device->device, device->function, PCI_COMMAND, sizing_cmd);
+    }
 
     pci_write32(device->bus, device->device, device->function, offset, 0xFFFFFFFFU);
-    mask = pci_read32(device->bus, device->device, device->function, offset);
-    pci_write32(device->bus, device->device, device->function, offset, original);
+    if (is_64bit) {
+        pci_write32(device->bus, device->device, device->function, high_offset, 0xFFFFFFFFU);
+    }
+
+    mask_low = pci_read32(device->bus, device->device, device->function, offset);
+    mask_high = 0;
+    if (is_64bit) {
+        mask_high = pci_read32(device->bus, device->device, device->function, high_offset);
+    }
+
+    pci_write32(device->bus, device->device, device->function, offset, original_low);
+    if (is_64bit) {
+        pci_write32(device->bus, device->device, device->function, high_offset, original_high);
+    }
+    if (sizing_cmd != original_cmd) {
+        pci_write16(device->bus, device->device, device->function, PCI_COMMAND, original_cmd);
+    }
 
     if (is_io) {
-        mask &= ~0x3U;
-        if (mask == 0) {
+        mask_low &= ~0x3U;
+        if (mask_low == 0) {
             return 0;
         }
         /* Invert as uint32_t first; casting to uint64_t before ~ yields ~2^64. */
-        size = (uint64_t)((~mask) + 1U);
+        size = (uint64_t)((~mask_low) + 1U);
         return size & 0xFFFFULL;
     }
 
-    mask &= ~0xFU;
-    if (mask == 0) {
+    if (is_64bit) {
+        mask64 = ((uint64_t)mask_high << 32) | (uint64_t)(mask_low & ~0xFU);
+        if (mask64 == 0) {
+            return 0;
+        }
+        return (~mask64) + 1ULL;
+    }
+
+    mask_low &= ~0xFU;
+    if (mask_low == 0) {
         return 0;
     }
-    return (uint64_t)((~mask) + 1U);
+    return (uint64_t)((~mask_low) + 1U);
 }
 
 int pci_decode_bar(device_t *device, uint8_t bar_index, pci_bar_info_t *out)

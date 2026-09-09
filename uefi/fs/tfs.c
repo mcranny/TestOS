@@ -12,6 +12,9 @@
 #define TFS_BITMAP_BLOCKS   8U
 #define TFS_INODE_LBA       9U
 #define TFS_DATA_LBA        (TFS_INODE_LBA + TFS_INODE_COUNT)
+/* Fixed bitmap is TFS_BITMAP_BLOCKS sectors; each bit tracks one data block. */
+#define TFS_MAX_DATA_BLOCKS (TFS_BITMAP_BLOCKS * TFS_SECTOR_SIZE * 8U)
+#define TFS_MAX_BLOCK_COUNT (TFS_DATA_LBA + TFS_MAX_DATA_BLOCKS)
 
 typedef struct tfs_superblock
 {
@@ -201,21 +204,40 @@ static int tfs_store_inode(uint32_t index, const tfs_inode_t *inode)
 
 static uint32_t tfs_data_block_count(void)
 {
+    uint32_t count;
+
     if (tfs_sb.block_count <= tfs_sb.data_lba)
     {
         return 0;
     }
 
-    return tfs_sb.block_count - tfs_sb.data_lba;
+    count = tfs_sb.block_count - tfs_sb.data_lba;
+    if (count > TFS_MAX_DATA_BLOCKS)
+    {
+        count = TFS_MAX_DATA_BLOCKS;
+    }
+
+    return count;
 }
 
 static int tfs_bitmap_get(uint32_t bit)
 {
+    if (bit / 8U >= sizeof(tfs_bitmap))
+    {
+        /* Out of range: treat as allocated so alloc never uses OOB bits. */
+        return 1;
+    }
+
     return (tfs_bitmap[bit / 8U] >> (bit % 8U)) & 1U;
 }
 
 static void tfs_bitmap_set(uint32_t bit, int value)
 {
+    if (bit / 8U >= sizeof(tfs_bitmap))
+    {
+        return;
+    }
+
     if (value)
     {
         tfs_bitmap[bit / 8U] |= (uint8_t)(1U << (bit % 8U));
@@ -378,6 +400,13 @@ int tfs_format(block_device_t *device)
     tfs_sb.inode_lba = TFS_INODE_LBA;
     tfs_sb.data_lba = TFS_DATA_LBA;
 
+    if (tfs_sb.block_count > TFS_MAX_BLOCK_COUNT)
+    {
+        log_warn("TFS: device exceeds bitmap capacity; capping usable blocks");
+        log_hex64("TFS: capped block_count=", TFS_MAX_BLOCK_COUNT);
+        tfs_sb.block_count = TFS_MAX_BLOCK_COUNT;
+    }
+
     if (tfs_sb.block_count <= tfs_sb.data_lba)
     {
         return 0;
@@ -447,6 +476,19 @@ int tfs_mount(block_device_t *device)
 
     tfs_device = device;
     tfs_sb = loaded;
+
+    if (tfs_sb.block_count > TFS_MAX_BLOCK_COUNT)
+    {
+        log_warn("TFS: superblock exceeds bitmap capacity; capping usable blocks");
+        log_hex64("TFS: capped block_count=", TFS_MAX_BLOCK_COUNT);
+        tfs_sb.block_count = TFS_MAX_BLOCK_COUNT;
+    }
+
+    if (tfs_sb.block_count <= tfs_sb.data_lba)
+    {
+        tfs_device = NULL;
+        return 0;
+    }
 
     if (!block_read(
             tfs_device,
@@ -686,6 +728,8 @@ int tfs_write(
     tfs_inode_t inode;
     uint32_t blocks_needed;
     uint32_t start_block = 0;
+    uint32_t old_start = 0;
+    uint32_t old_count = 0;
     uint8_t sector[TFS_SECTOR_SIZE];
     uint32_t offset;
     uint32_t chunk;
@@ -708,13 +752,11 @@ int tfs_write(
             return 0;
         }
 
-        if (inode.block_count > 0)
-        {
-            tfs_free_blocks(inode.start_block, inode.block_count);
-            inode.start_block = 0;
-            inode.block_count = 0;
-            inode.size = 0;
-        }
+        /* Keep old blocks allocated until the new run is reserved,
+         * written, and the inode is persisted — otherwise an alloc
+         * failure leaves the on-disk inode pointing at free blocks. */
+        old_start = inode.start_block;
+        old_count = inode.block_count;
     }
     else
     {
@@ -766,7 +808,23 @@ int tfs_write(
     inode.executable = executable ? 1U : 0U;
     inode.start_block = start_block;
     inode.block_count = blocks_needed;
-    return tfs_store_inode(index, &inode);
+
+    if (!tfs_store_inode(index, &inode))
+    {
+        if (blocks_needed > 0)
+        {
+            tfs_free_blocks(start_block, blocks_needed);
+        }
+
+        return 0;
+    }
+
+    if (old_count > 0)
+    {
+        tfs_free_blocks(old_start, old_count);
+    }
+
+    return 1;
 }
 
 int tfs_read(

@@ -33,7 +33,7 @@ PYTHON ?= $(shell \
 
 UEFI_CFLAGS = --target=x86_64-unknown-none-elf -m64 -ffreestanding -fno-pie -fno-pic \
 	-fno-stack-protector -mno-red-zone -mcmodel=kernel -nostdlib -nostdinc \
-	-Wall -Wextra -Iuefi -Iuefi/net
+	-Wall -Wextra -MMD -MP -Iuefi -Iuefi/net
 
 UEFI_C_SOURCES = \
 	uefi/kernel.c \
@@ -47,10 +47,12 @@ UEFI_C_SOURCES = \
 	uefi/arch/gdt.c \
 	uefi/arch/idt.c \
 	uefi/arch/interrupts.c \
+	uefi/arch/smap.c \
 	uefi/mm/pmm.c \
 	uefi/mm/paging.c \
 	uefi/mm/heap.c \
 	uefi/mm/dma.c \
+	uefi/cpu/cpu_local.c \
 	uefi/lib/string.c \
 	uefi/drivers/kbd.c \
 	uefi/drivers/console.c \
@@ -103,8 +105,11 @@ UEFI_S_SOURCES = \
 UEFI_C_OBJECTS = $(patsubst uefi/%.c,build/uefi/%.o,$(UEFI_C_SOURCES))
 UEFI_S_OBJECTS = $(patsubst uefi/%.S,build/uefi/%.o,$(UEFI_S_SOURCES))
 UEFI_OBJECTS = $(UEFI_S_OBJECTS) $(UEFI_C_OBJECTS)
+UEFI_DEPS = $(UEFI_C_OBJECTS:.o=.d)
 
 USER_PROGRAMS = build/uefi-calc.elf build/uefi-dns.elf build/uefi-wget.elf build/uefi-tcp.elf build/uefi-udp.elf
+
+-include $(UEFI_DEPS)
 
 .PHONY: all uefi-kernel usb-image usb-image-local uefi-usb-test run run-uefi clean
 
@@ -115,7 +120,7 @@ build:
 
 uefi-kernel: $(UEFI_KERNEL)
 
-build/uefi/%.o: uefi/%.c uefi/limine.h uefi/types.h uefi/platform.h | build
+build/uefi/%.o: uefi/%.c | build
 	mkdir -p $(dir $@)
 	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
 

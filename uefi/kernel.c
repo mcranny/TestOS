@@ -25,6 +25,7 @@
 #include "mm/heap.h"
 #include "block/block.h"
 #include "fs/tfs.h"
+#include "cpu/cpu_local.h"
 #include "task/process.h"
 #include "user/syscall.h"
 #include "user/exec.h"
@@ -54,6 +55,7 @@ void uefi_main(void)
     console_puts("\n");
 
     console_puts("loading gdt/idt/tss\n");
+    cpu_local_init();
     tss_init();
     gdt_init();
     idt_init();

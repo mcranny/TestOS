@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Host-side TCP regression client for TestOS' QEMU user-network port forward."""
+"""Host-side TCP echo client for TestOS QEMU user-network port forward (:12346).
+
+Driven by `dev/uefi-net-smoke.py` against the UEFI image (not the deleted i386 build).
+"""
 
 import socket
 import sys

@@ -40,6 +40,17 @@ ipv4_addr_t ipv4_addr_from_bytes(const uint8_t in[4]);
 void ipv4_addr_format(ipv4_addr_t ip, char *out /* >= 16 */);
 
 void ipv4_input(const uint8_t *payload, uint16_t length, const mac_addr_t *src_mac);
+
+/*
+ * ipv4_send() return values:
+ *   IPV4_OK (1)           — frame transmitted
+ *   IPV4_ARP_PENDING (2)  — queued; ARP in flight (not a hard failure)
+ *   0                     — hard failure
+ * Any non-zero means the packet was accepted (sent or will send after ARP).
+ */
+#define IPV4_OK           1
+#define IPV4_ARP_PENDING  2
+
 int ipv4_send(
     ipv4_addr_t dst,
     uint8_t protocol,

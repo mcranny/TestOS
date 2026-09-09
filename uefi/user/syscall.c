@@ -2,6 +2,7 @@
 #include "task/process.h"
 #include "arch/gdt.h"
 #include "arch/io.h"
+#include "arch/smap.h"
 #include "drivers/console.h"
 #include "mm/paging.h"
 #include "platform.h"
@@ -42,15 +43,19 @@ static int copy_user_string(process_t *p, const char *ubuf, char *kbuf, uint64_t
     if (!p || !p->as || ubuf == NULL || kbuf == NULL || cap == 0) {
         return 0;
     }
+    user_access_begin();
     for (i = 0; i + 1U < cap; i++) {
         if (!address_space_is_user_range(p->as, (uint64_t)(uintptr_t)(ubuf + i), 1)) {
+            user_access_end();
             return 0;
         }
         kbuf[i] = ubuf[i];
         if (ubuf[i] == '\0') {
+            user_access_end();
             return 1;
         }
     }
+    user_access_end();
     kbuf[cap - 1U] = '\0';
     return 1;
 }
@@ -72,9 +77,11 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2)
         if (!address_space_is_user_range(p->as, (uint64_t)(uintptr_t)buf, len)) {
             return -1;
         }
+        user_access_begin();
         for (i = 0; i < len; i++) {
             console_putc(buf[i]);
         }
+        user_access_end();
         return (int64_t)len;
     }
     case SYS_YIELD:
@@ -108,24 +115,32 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2)
     case SYS_SEND: {
         const void *buf = (const void *)(uintptr_t)a1;
         uint64_t len = a2;
+        int64_t n;
         if (!p || !p->as) return -1;
         if (len > 2048) len = 2048;
         if (len > 0 && !address_space_is_user_range(p->as, (uint64_t)(uintptr_t)buf, len)) {
             return -1;
         }
         (void)ethernet_poll();
-        return (int64_t)socket_send((int)a0, buf, (uint16_t)len);
+        user_access_begin();
+        n = (int64_t)socket_send((int)a0, buf, (uint16_t)len);
+        user_access_end();
+        return n;
     }
     case SYS_RECV: {
         void *buf = (void *)(uintptr_t)a1;
         uint64_t len = a2;
+        int64_t n;
         if (!p || !p->as) return -1;
         if (len > 2048) len = 2048;
         if (len > 0 && !address_space_is_user_range(p->as, (uint64_t)(uintptr_t)buf, len)) {
             return -1;
         }
         (void)ethernet_poll();
-        return (int64_t)socket_recv((int)a0, buf, (uint16_t)len);
+        user_access_begin();
+        n = (int64_t)socket_recv((int)a0, buf, (uint16_t)len);
+        user_access_end();
+        return n;
     }
     case SYS_CLOSE:
         return (int64_t)socket_close((int)a0);
@@ -143,13 +158,16 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2)
         if (!dns_resolve(host, &ip)) {
             return -1;
         }
+        user_access_begin();
         *out = ip;
+        user_access_end();
         return 0;
     }
     case SYS_FSWRITE: {
         char path[FS_MAX_PATH];
         const void *buf = (const void *)(uintptr_t)a1;
         uint64_t len = a2;
+        int ok;
         if (!p || !p->as) return -1;
         if (!copy_user_string(p, (const char *)(uintptr_t)a0, path, sizeof(path))) {
             return -1;
@@ -158,7 +176,10 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2)
         if (len > 0 && !address_space_is_user_range(p->as, (uint64_t)(uintptr_t)buf, len)) {
             return -1;
         }
-        if (!tfs_write(path, buf, (uint32_t)len, 0)) {
+        user_access_begin();
+        ok = tfs_write(path, buf, (uint32_t)len, 0);
+        user_access_end();
+        if (!ok) {
             return -1;
         }
         return (int64_t)len;

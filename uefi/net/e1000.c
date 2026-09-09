@@ -2,6 +2,7 @@
 #include "ethernet.h"
 #include "netif.h"
 #include "platform.h"
+#include "mm/dma.h"
 #include "drivers/pci.h"
 #include "drivers/device.h"
 #include "lib/string.h"
@@ -35,24 +36,6 @@ static uint64_t rx_buffer_phys[E1000_RX_DESC_COUNT];
 static uint64_t rx_ring_phys = 0;
 static uint16_t rx_next = 0;
 static int rx_configured = 0;
-
-static int dma_alloc_page(uint64_t *phys_out, void **virt_out)
-{
-    uint64_t phys;
-
-    if (phys_out == NULL || virt_out == NULL) {
-        return 0;
-    }
-
-    phys = pmm_alloc_frame();
-    if (phys == 0) {
-        return 0;
-    }
-
-    *phys_out = phys;
-    *virt_out = phys_to_virt(phys);
-    return 1;
-}
 
 uint32_t e1000_read_reg(uint32_t offset)
 {
@@ -351,14 +334,15 @@ int e1000_poll_rx(void)
 {
     static int in_poll;
     int frames = 0;
+    uint64_t flags;
 
-    irq_disable();
+    flags = irq_save();
     if (in_poll || !e1000_ready || !rx_configured || rx_ring == NULL) {
-        irq_enable();
+        irq_restore(flags);
         return 0;
     }
     in_poll = 1;
-    irq_enable();
+    irq_restore(flags);
 
     while (frames < (int)E1000_RX_DESC_COUNT) {
         volatile e1000_rx_desc_t *desc = &rx_ring[rx_next];
@@ -373,13 +357,22 @@ int e1000_poll_rx(void)
         length = desc->length;
         buf = rx_buffers[rx_next];
 
-        if (length >= ETH_HDR_LEN && buf != NULL) {
+        /*
+         * Single 2048-byte RX buffer per descriptor (MTU fits one desc).
+         * Drop HW errors and non-EOP fragments; never feed them upstairs.
+         */
+        if (desc->errors != 0 ||
+            (desc->status & E1000_RXD_STAT_EOP) == 0 ||
+            length < ETH_HDR_LEN ||
+            buf == NULL) {
+            if (e1000_netif != NULL) {
+                netif_inc_drop(e1000_netif);
+            }
+        } else {
             if (e1000_netif != NULL) {
                 netif_inc_rx(e1000_netif);
             }
             ethernet_input(buf, length);
-        } else if (e1000_netif != NULL) {
-            netif_inc_drop(e1000_netif);
         }
 
         desc->status = 0;
@@ -393,9 +386,9 @@ int e1000_poll_rx(void)
         frames++;
     }
 
-    irq_disable();
+    flags = irq_save();
     in_poll = 0;
-    irq_enable();
+    irq_restore(flags);
     return frames;
 }
 

@@ -129,8 +129,10 @@ def qemu_storage_args(backend: str) -> list[str]:
 def run_boot(fresh_data: bool, commands: list[tuple[str, float]], backend: str = "ata") -> str:
     if fresh_data:
         DATA.write_bytes(b"\x00" * (16 * 1024 * 1024))
-    if not VARS.exists() or VARS.stat().st_size == 0:
-        VARS.write_bytes(b"\x00" * CODE.stat().st_size)
+    sys.path.insert(0, str(ROOT / "dev"))
+    from ovmf_vars import ensure_ovmf_vars
+
+    ensure_ovmf_vars(VARS, CODE)
 
     args = [
         str(QEMU),
@@ -213,6 +215,7 @@ def main() -> int:
         ("ls", 1.2),
         ("write persist.txt hello-tfs", 1.5),
         ("cat persist.txt", 1.2),
+        ("fsck", 2.0),
         ("calc 2+3*4", 4.0),
         ("./calc 10-3", 4.0),
         ("ps", 1.5),
@@ -228,17 +231,23 @@ def main() -> int:
     ok &= check(text1, "seeded /calc", "seed")
     ok &= check(text1, "ring3 hello OK", "hello")
     ok &= check(text1, "\nhello-tfs\n", "persist write/cat")
+    ok &= check(text1, "fsck: ok", "tfs fsck after write")
     ok &= check(text1, "\n14\n", "calc 2+3*4")
     ok &= check(text1, "\n7\n", "calc 10-3")
     ok &= check(text1, "PID STATE NAME", "ps")
 
     print("boot2 (persist)...")
-    text2 = run_boot(False, [("cat persist.txt", 1.2), ("ls", 1.2)], backend)
+    text2 = run_boot(
+        False,
+        [("cat persist.txt", 1.2), ("fsck", 2.0), ("ls", 1.2)],
+        backend,
+    )
     ok &= check(text2, "tfs mount OK", "tfs remount")
     formatted = "tfs mount OK (formatted)" in text2
     print(f"  [{'OK' if not formatted else 'FAIL'}] no reformat on remount")
     ok &= not formatted
     ok &= check(text2, "hello-tfs", "persist across reboot")
+    ok &= check(text2, "fsck: ok", "tfs fsck after remount")
     ok &= check(text2, "calc", "calc still listed")
 
     print("--- boot1 tail ---")

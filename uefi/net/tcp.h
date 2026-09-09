@@ -6,13 +6,15 @@
 
 #define TCP_HDR_MIN_LEN 20U
 #define TCP_ECHO_PORT 12346U
-#define TCP_DATA_MAX 1024U
+/* Typical MSS (ETH 1500 - IPv4 20 - TCP 20); receive path matches advertised window. */
+#define TCP_DATA_MAX 1460U
 
 /* Transport callbacks use tuple values, never TCP control-block pointers. */
 typedef struct {
     void (*established)(ipv4_addr_t address, uint16_t local_port, uint16_t remote_port);
-    void (*data)(ipv4_addr_t address, uint16_t local_port, uint16_t remote_port,
-                 const uint8_t *data, uint16_t length);
+    /* Return non-zero if data was accepted; 0 refuses (do not ACK / advance rcv_nxt). */
+    int (*data)(ipv4_addr_t address, uint16_t local_port, uint16_t remote_port,
+                const uint8_t *data, uint16_t length);
     void (*closed)(ipv4_addr_t address, uint16_t local_port, uint16_t remote_port, int failed);
 } tcp_app_callbacks_t;
 

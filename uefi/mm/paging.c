@@ -2,6 +2,7 @@
 #include "mm/pmm.h"
 #include "mm/heap.h"
 #include "arch/io.h"
+#include "arch/smap.h"
 #include "drivers/console.h"
 #include "lib/string.h"
 #include "platform.h"
@@ -12,10 +13,6 @@
 static uint64_t *pml4;
 static uint64_t kernel_pml4_phys;
 static address_space_t kernel_as;
-static uint64_t hhdm_offset;
-static uint64_t kernel_phys_base;
-static uint64_t kernel_virt_base;
-static uint64_t kernel_size;
 
 static void memset64(void *dst, uint8_t value, uint64_t size)
 {
@@ -366,9 +363,12 @@ void paging_user_probe(void)
     }
     address_space_switch(as);
     via_user = (volatile uint64_t *)(uintptr_t)user_virt;
+    user_access_begin();
     if (via_user[0] != 0x5553455241530001ULL) {
+        user_access_end();
         panic("user as: read failed");
     }
+    user_access_end();
     write_cr3(saved_cr3);
     pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
     address_space_destroy(as);
@@ -377,15 +377,37 @@ void paging_user_probe(void)
 
 void paging_init(const struct boot_info *boot)
 {
-    hhdm_offset = boot->hhdm_offset;
-    kernel_phys_base = boot->kernel_phys_base;
-    kernel_virt_base = boot->kernel_virt_base;
-    kernel_size = boot->kernel_size;
-    (void)hhdm_offset;
-    (void)kernel_phys_base;
-    (void)kernel_virt_base;
-    (void)kernel_size;
+    uint32_t eax;
+    uint32_t ebx;
+    uint32_t ecx;
+    uint32_t edx;
+    uint64_t cr4;
+
+    (void)boot; /* HHDM/kernel bases live in pmm; phys_to_virt uses those. */
 
     clone_pml4_from_limine();
     paging_probe();
+
+    /*
+     * Enable SMEP/SMAP only when CPUID reports them. Writing unsupported CR4
+     * bits #GPs on real hardware and appears as a hang right after
+     * "paging probe OK" (next line never prints).
+     * Leaf 7 EBX: SMEP=bit7, SMAP=bit20.
+     */
+    eax = 7;
+    ecx = 0;
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(eax), "c"(ecx)
+                     : "memory");
+    cr4 = read_cr4();
+    smap_enabled = 0;
+    if (ebx & (1U << 7)) {
+        cr4 |= (1ULL << 20); /* SMEP */
+    }
+    if (ebx & (1U << 20)) {
+        cr4 |= (1ULL << 21); /* SMAP */
+        smap_enabled = 1;
+    }
+    write_cr4(cr4);
 }

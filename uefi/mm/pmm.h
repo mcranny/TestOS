@@ -5,7 +5,9 @@
 
 void pmm_init(const struct boot_info *boot);
 uint64_t pmm_alloc_frame(void);
+uint64_t pmm_alloc_frame_below(uint64_t max_phys);
 uint64_t pmm_alloc_contiguous(uint64_t frames);
+uint64_t pmm_alloc_contiguous_below(uint64_t frames, uint64_t max_phys);
 void pmm_free_frame(uint64_t phys);
 uint64_t pmm_total_frames(void);
 uint64_t pmm_free_frames(void);

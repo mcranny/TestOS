@@ -164,13 +164,17 @@ static int tcp_emit(tcp_conn_t *c, uint8_t flags, const uint8_t *data, uint16_t 
     }
     else
 #endif
-    if (!ipv4_send(c->remote_ip, IPV4_PROTO_TCP, seg, total)) {
-        c->snd_nxt = saved_nxt;
-        if (remember) {
-            c->unacked_flags = 0;
-            c->unacked_len = 0;
+    {
+        int sent = ipv4_send(c->remote_ip, IPV4_PROTO_TCP, seg, total);
+        /* ARP-pending still queued the segment; keep PCB / seq state. */
+        if (sent == 0) {
+            c->snd_nxt = saved_nxt;
+            if (remember) {
+                c->unacked_flags = 0;
+                c->unacked_len = 0;
+            }
+            return 0;
         }
-        return 0;
     }
     return 1;
 }
@@ -354,8 +358,9 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
     if (c->state == TCP_LAST_ACK && c->snd_una == c->snd_nxt) { c->used = 0; klog(KLOG_INFO, "TCP", "Connection closed"); return; }
     if (c->state != TCP_ESTABLISHED && c->state != TCP_FIN_WAIT_2) return;
     if (data_len) {
+        int accepted = 1;
+        int need_ack = 1;
         if (seq != c->rcv_nxt || data_len > TCP_WINDOW) { tcp_ack(c); return; }
-        c->rcv_nxt += data_len; tcp_ack(c);
         if (c->state == TCP_ESTABLISHED && c->local_port == TCP_ECHO_PORT)
         {
 #ifdef TESTOS_TCP_TEST_HOOKS
@@ -365,7 +370,12 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
                 tcp_test_drop_next_segment();
             }
 #endif
-            (void)tcp_send(src, src_port, dst_port, &p[hdr], data_len);
+            /* Advance before echo so the PSH+ACK piggybacks covering rcv_nxt. */
+            c->rcv_nxt += data_len;
+            if (!tcp_send(src, src_port, dst_port, &p[hdr], data_len)) {
+                tcp_ack(c);
+            }
+            need_ack = 0;
         }
         else {
             /* Listeners serve passive sockets; clients use the global app callbacks. */
@@ -374,8 +384,14 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
                 cb = tcp_app_callbacks;
             }
             if (cb && cb->data) {
-                cb->data(src, c->local_port, c->remote_port, &p[hdr], data_len);
+                accepted = cb->data(src, c->local_port, c->remote_port, &p[hdr], data_len);
             }
+            /* Only ACK after the app accepts; avoids ACK-then-drop on full RX. */
+            if (!accepted) return;
+            c->rcv_nxt += data_len;
+        }
+        if (need_ack) {
+            tcp_ack(c);
         }
     }
     if (flags & TCP_FIN) {

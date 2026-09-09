@@ -18,6 +18,8 @@
 #define PF_W 2
 #define PF_R 4
 #define PAGE_SIZE 4096ULL
+/* Low half of canonical VA space; must match map_user_page / address_space_is_user_range. */
+#define USER_VA_LIMIT 0x0000800000000000ULL
 
 struct elf64_ehdr {
     uint8_t e_ident[16];
@@ -49,16 +51,26 @@ struct elf64_phdr {
 
 static int ensure_user_page(address_space_t *as, uint64_t page, uint64_t flags, uint8_t **dst_out)
 {
-    uint64_t phys = address_space_virt_to_phys(as, page);
+    uint64_t phys;
     uint64_t map_flags = PAGE_PRESENT | PAGE_USER | (flags & (PAGE_WRITABLE | PAGE_NX));
     uint64_t *root;
     uint64_t *pdpt;
     uint64_t *pd;
     uint64_t *pt;
-    uint64_t pml4e = (page >> 39) & 0x1ff;
-    uint64_t pdpte = (page >> 30) & 0x1ff;
-    uint64_t pde = (page >> 21) & 0x1ff;
-    uint64_t pte = (page >> 12) & 0x1ff;
+    uint64_t pml4e;
+    uint64_t pdpte;
+    uint64_t pde;
+    uint64_t pte;
+
+    /* Refuse kernel-half VAs: user AS shares kernel PML4 entries; merging
+     * PAGE_USER|WRITABLE onto those PTEs would corrupt kernel mappings. */
+    if (page >= USER_VA_LIMIT || (page & (PAGE_SIZE - 1)) != 0) return -1;
+
+    phys = address_space_virt_to_phys(as, page);
+    pml4e = (page >> 39) & 0x1ff;
+    pdpte = (page >> 30) & 0x1ff;
+    pde = (page >> 21) & 0x1ff;
+    pte = (page >> 12) & 0x1ff;
 
     if (phys) {
         /* Merge permissions across overlapping PT_LOAD segments on one page. */
@@ -95,6 +107,7 @@ int elf64_load(address_space_t *as, const void *image, uint64_t size, uint64_t *
 {
     const struct elf64_ehdr *eh;
     const struct elf64_phdr *ph;
+    uint64_t ph_bytes;
     uint16_t i;
 
     if (!as || !image || !entry_out || size < sizeof(*eh)) return -1;
@@ -103,21 +116,39 @@ int elf64_load(address_space_t *as, const void *image, uint64_t size, uint64_t *
         eh->e_ident[2] != ELFMAG2 || eh->e_ident[3] != ELFMAG3) return -1;
     if (eh->e_ident[4] != ELFCLASS64 || eh->e_ident[5] != ELFDATA2LSB) return -1;
     if (eh->e_type != ET_EXEC || eh->e_machine != EM_X86_64) return -1;
-    if (eh->e_phoff + (uint64_t)eh->e_phnum * eh->e_phentsize > size) return -1;
+    if (eh->e_phentsize < sizeof(struct elf64_phdr)) return -1;
+
+    /* Overflow-safe: e_phoff + phnum*entsize must lie within the image. */
+    ph_bytes = (uint64_t)eh->e_phnum * (uint64_t)eh->e_phentsize;
+    if (eh->e_phoff > size || ph_bytes > size - eh->e_phoff) return -1;
+
+    /* Entry must be a user VA (jumping into kernel half is never valid). */
+    if (eh->e_entry >= USER_VA_LIMIT) return -1;
 
     ph = (const struct elf64_phdr *)((const uint8_t *)image + eh->e_phoff);
     for (i = 0; i < eh->e_phnum; i++) {
         const struct elf64_phdr *p = (const struct elf64_phdr *)((const uint8_t *)ph + i * eh->e_phentsize);
-        uint64_t va, end, page, file_left;
+        uint64_t va, end, page, file_left, seg_end;
         const uint8_t *src;
         uint64_t flags = PAGE_PRESENT | PAGE_USER;
         if (p->p_type != PT_LOAD) continue;
-        if (p->p_offset + p->p_filesz > size) return -1;
+
+        /* Overflow-safe file segment bounds. */
+        if (p->p_offset > size || p->p_filesz > size - p->p_offset) return -1;
+        if (p->p_filesz > p->p_memsz) return -1;
+
+        /* Reject wrap and any range not entirely in the user half. */
+        seg_end = p->p_vaddr + p->p_memsz;
+        if (seg_end < p->p_vaddr) return -1;
+        if (p->p_vaddr >= USER_VA_LIMIT || seg_end > USER_VA_LIMIT) return -1;
+        if (p->p_memsz == 0) continue;
+
         if (p->p_flags & PF_W) flags |= PAGE_WRITABLE;
         if (!(p->p_flags & PF_X)) flags |= PAGE_NX;
 
         va = p->p_vaddr & ~(PAGE_SIZE - 1);
-        end = (p->p_vaddr + p->p_memsz + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        /* seg_end <= USER_VA_LIMIT, so rounding up cannot wrap uint64_t. */
+        end = (seg_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
         src = (const uint8_t *)image + p->p_offset;
         file_left = p->p_filesz;
 

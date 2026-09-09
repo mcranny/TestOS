@@ -274,9 +274,11 @@ int ipv4_send(
             memset(&frame[frame_len], 0, (size_t)(ETH_MIN_FRAME - frame_len));
             frame_len = ETH_MIN_FRAME;
         }
-        (void)arp_queue_packet(next_hop, frame, frame_len);
+        if (!arp_queue_packet(next_hop, frame, frame_len)) {
+            return 0;
+        }
         (void)arp_request(next_hop);
-        return 0;
+        return IPV4_ARP_PENDING;
     }
 
     return ethernet_send(&dst_mac, ETHERTYPE_IPV4, packet, total);

@@ -33,6 +33,8 @@ typedef struct process {
     int protected; /* shell/idle: not killable */
     uint64_t user_entry;
     uint64_t user_stack;
+    /* In-flight SYSCALL user RSP; CPU live slot is current_syscall_user_rsp. */
+    uint64_t syscall_user_rsp;
     struct process *next;
 } process_t;
 
@@ -42,6 +44,7 @@ void scheduler_init(void);
 void scheduler_tick(void);
 void scheduler_yield(void);
 void scheduler_on_irq_exit(void);
+/* Thin wrappers over cpu_current() — preferred public API for most callers. */
 process_t *process_get_current(void);
 uint32_t process_get_current_pid(void);
 process_t *process_find_by_pid(uint32_t pid);

@@ -10,13 +10,15 @@ int dma_alloc_page(uint64_t *phys_out, void **virt_out)
         return 0;
     }
 
-    phys = pmm_alloc_frame();
+    /* Require phys < 4 GiB for 32-bit DMA devices. */
+    phys = pmm_alloc_frame_below(DMA_ZONE_MAX_PHYS);
     if (phys == 0) {
         return 0;
     }
 
     *phys_out = phys;
     *virt_out = phys_to_virt(phys);
+    memset(*virt_out, 0, 4096);
     return 1;
 }
 
@@ -37,7 +39,7 @@ int dma_alloc_pages(uint64_t frames, dma_buffer_t *out)
         return 1;
     }
 
-    phys = pmm_alloc_contiguous(frames);
+    phys = pmm_alloc_contiguous_below(frames, DMA_ZONE_MAX_PHYS);
     if (phys == 0) {
         return 0;
     }

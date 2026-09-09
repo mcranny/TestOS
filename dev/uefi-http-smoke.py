@@ -92,8 +92,10 @@ def main() -> int:
     code = resolve_ovmf_code()
     if not DATA.exists() or DATA.stat().st_size == 0:
         DATA.write_bytes(b"\x00" * (16 * 1024 * 1024))
-    if not VARS.exists() or VARS.stat().st_size == 0:
-        VARS.write_bytes(b"\x00" * code.stat().st_size)
+    sys.path.insert(0, str(ROOT / "dev"))
+    from ovmf_vars import ensure_ovmf_vars
+
+    ensure_ovmf_vars(VARS, code)
 
     args = [
         str(qemu),

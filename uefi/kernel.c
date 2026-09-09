@@ -15,6 +15,7 @@
 #include "input/input.h"
 #include "e1000.h"
 #include "ethernet.h"
+#include "netif.h"
 #include "arch/tss.h"
 #include "arch/gdt.h"
 #include "arch/idt.h"
@@ -114,6 +115,7 @@ void uefi_main(void)
     xhci_initialize();
 
     console_puts("initializing e1000\n");
+    netif_init();
     e1000_initialize();
 
     console_puts("BOOT: TestOS ready\n");
@@ -136,6 +138,7 @@ void uefi_main(void)
     }
 
     seed_calc_from_blob();
+    seed_net_utils_from_blobs();
     spawn_hello_user();
 
     console_puts("starting shell\n");

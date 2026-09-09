@@ -19,15 +19,15 @@ typedef struct {
 } socket_t;
 static socket_t sockets[SOCKET_MAX];
 
-static int encode(uint32_t i) { return (int)((sockets[i].generation << 4) | (i + 1U)); }
+static int encode(uint32_t i) { return (int)((sockets[i].generation << 8) | (i + 1U)); }
 static socket_t *get(int handle)
 {
     uint32_t slot;
     if (handle <= 0) return NULL;
-    slot = ((uint32_t)handle & 0x0fU);
+    slot = ((uint32_t)handle & 0xffU);
     if (slot == 0U || slot > SOCKET_MAX) return NULL;
     slot--;
-    if (sockets[slot].state == SOCKET_FREE || sockets[slot].generation != ((uint32_t)handle >> 4)) return NULL;
+    if (sockets[slot].state == SOCKET_FREE || sockets[slot].generation != ((uint32_t)handle >> 8)) return NULL;
     return &sockets[slot];
 }
 static socket_t *find_listener(uint16_t port)
@@ -103,13 +103,24 @@ int socket_accept(int h)
 int socket_connect(int h, ipv4_addr_t ip, uint16_t port, uint16_t local)
 {
     socket_t *s = get(h);
-    if (!s || s->state != SOCKET_NEW || !ip || !port || !local || !tcp_connect(ip, port, local)) return SOCKET_ERROR;
-    s->state = SOCKET_CONNECTING; s->remote_ip = ip; s->remote_port = port; s->port = local; return 1;
+    if (!s || s->state != SOCKET_NEW || !ip || !port || !local) return SOCKET_ERROR;
+    /* Bind peer fields before tcp_connect so loopback handshake can promote us. */
+    s->remote_ip = ip;
+    s->remote_port = port;
+    s->port = local;
+    s->state = SOCKET_CONNECTING;
+    if (!tcp_connect(ip, port, local)) {
+        s->state = SOCKET_FAILED;
+        return SOCKET_ERROR;
+    }
+    return 1;
 }
 int socket_send(int h, const void *data, uint16_t length)
 {
     socket_t *s = get(h);
-    if (!s || s->state != SOCKET_ESTABLISHED || (!data && length)) return SOCKET_ERROR;
+    if (!s || (!data && length)) return SOCKET_ERROR;
+    if (s->state == SOCKET_CONNECTING) return SOCKET_WOULD_BLOCK;
+    if (s->state != SOCKET_ESTABLISHED) return SOCKET_ERROR;
     if (!length) return 0;
     if (length > TCP_DATA_MAX) length = TCP_DATA_MAX;
     return tcp_send(s->remote_ip, s->remote_port, s->port, data, length) ? (int)length : SOCKET_WOULD_BLOCK;
@@ -130,4 +141,40 @@ int socket_close(int h)
     if (s->state == SOCKET_ESTABLISHED && !tcp_close(s->remote_ip, s->remote_port, s->port)) return SOCKET_WOULD_BLOCK;
     for (i = 0; i < s->pending_count; i++) (void)socket_close(s->pending[i]);
     s->state = SOCKET_FREE; return 1;
+}
+
+uint32_t socket_count_active(void)
+{
+    uint32_t i;
+    uint32_t n = 0;
+    for (i = 0; i < SOCKET_MAX; i++) {
+        if (sockets[i].state != SOCKET_FREE) {
+            n++;
+        }
+    }
+    return n;
+}
+
+int socket_get_info(uint32_t index, socket_info_t *out)
+{
+    uint32_t i;
+    uint32_t n = 0;
+    if (out == NULL) {
+        return 0;
+    }
+    for (i = 0; i < SOCKET_MAX; i++) {
+        if (sockets[i].state == SOCKET_FREE) {
+            continue;
+        }
+        if (n == index) {
+            out->handle = encode(i);
+            out->state = (int)sockets[i].state;
+            out->port = sockets[i].port;
+            out->remote_port = sockets[i].remote_port;
+            out->remote_ip = sockets[i].remote_ip;
+            return 1;
+        }
+        n++;
+    }
+    return 0;
 }

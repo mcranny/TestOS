@@ -74,6 +74,8 @@ UEFI_C_SOURCES = \
 	uefi/net/e1000.c \
 	uefi/net/checksum.c \
 	uefi/net/mac.c \
+	uefi/net/netif.c \
+	uefi/net/route.c \
 	uefi/net/ethernet.c \
 	uefi/net/arp.c \
 	uefi/net/ipv4.c \
@@ -81,6 +83,8 @@ UEFI_C_SOURCES = \
 	uefi/net/udp.c \
 	uefi/net/tcp.c \
 	uefi/net/socket.c \
+	uefi/net/dhcp.c \
+	uefi/net/dns.c \
 	uefi/net/http.c \
 	uefi/shell/shell.c
 
@@ -90,11 +94,17 @@ UEFI_S_SOURCES = \
 	uefi/arch/gdt_load.S \
 	uefi/task/switch.S \
 	uefi/user/syscall_entry.S \
-	uefi/user/calc_blob.S
+	uefi/user/calc_blob.S \
+	uefi/user/dns_blob.S \
+	uefi/user/wget_blob.S \
+	uefi/user/tcp_blob.S \
+	uefi/user/udp_blob.S
 
 UEFI_C_OBJECTS = $(patsubst uefi/%.c,build/uefi/%.o,$(UEFI_C_SOURCES))
 UEFI_S_OBJECTS = $(patsubst uefi/%.S,build/uefi/%.o,$(UEFI_S_SOURCES))
 UEFI_OBJECTS = $(UEFI_S_OBJECTS) $(UEFI_C_OBJECTS)
+
+USER_PROGRAMS = build/uefi-calc.elf build/uefi-dns.elf build/uefi-wget.elf build/uefi-tcp.elf build/uefi-udp.elf
 
 .PHONY: all uefi-kernel usb-image usb-image-local uefi-usb-test run run-uefi clean
 
@@ -113,17 +123,54 @@ build/uefi/%.o: uefi/%.S | build
 	mkdir -p $(dir $@)
 	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
 
-$(UEFI_KERNEL): $(UEFI_OBJECTS) uefi/linker.ld build/uefi-calc.elf
+$(UEFI_KERNEL): $(UEFI_OBJECTS) $(USER_PROGRAMS)
 	"$(UEFI_LD)" -m elf_x86_64 -nostdlib -z max-page-size=0x1000 -T uefi/linker.ld -o $@ $(UEFI_OBJECTS)
 
-build/uefi-calc.elf: uefi/user/crt0.S uefi/user/ulib.c uefi/user/calc.c uefi/user/user.ld | build
+build/uefi/user/crt0.o: uefi/user/crt0.S | build
 	mkdir -p build/uefi/user
-	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/crt0.S -o build/uefi/user/crt0.o
-	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/ulib.c -o build/uefi/user/ulib.o
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/crt0.S -o $@
+
+build/uefi/user/ulib.o: uefi/user/ulib.c uefi/user/ulib.h | build
+	mkdir -p build/uefi/user
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/ulib.c -o $@
+
+build/uefi-calc.elf: build/uefi/user/crt0.o build/uefi/user/ulib.o uefi/user/calc.c uefi/user/user.ld | build
 	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/calc.c -o build/uefi/user/calc.o
 	"$(UEFI_LD)" -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o $@ build/uefi/user/crt0.o build/uefi/user/ulib.o build/uefi/user/calc.o
 
+build/uefi-dns.elf: build/uefi/user/crt0.o build/uefi/user/ulib.o uefi/user/dns_main.c uefi/user/user.ld | build
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/dns_main.c -o build/uefi/user/dns_main.o
+	"$(UEFI_LD)" -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o $@ build/uefi/user/crt0.o build/uefi/user/ulib.o build/uefi/user/dns_main.o
+
+build/uefi-wget.elf: build/uefi/user/crt0.o build/uefi/user/ulib.o uefi/user/wget_main.c uefi/user/user.ld | build
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/wget_main.c -o build/uefi/user/wget_main.o
+	"$(UEFI_LD)" -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o $@ build/uefi/user/crt0.o build/uefi/user/ulib.o build/uefi/user/wget_main.o
+
+build/uefi-tcp.elf: build/uefi/user/crt0.o build/uefi/user/ulib.o uefi/user/tcp_main.c uefi/user/user.ld | build
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/tcp_main.c -o build/uefi/user/tcp_main.o
+	"$(UEFI_LD)" -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o $@ build/uefi/user/crt0.o build/uefi/user/ulib.o build/uefi/user/tcp_main.o
+
+build/uefi-udp.elf: build/uefi/user/crt0.o build/uefi/user/ulib.o uefi/user/udp_main.c uefi/user/user.ld | build
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -Iuefi/user -c uefi/user/udp_main.c -o build/uefi/user/udp_main.o
+	"$(UEFI_LD)" -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o $@ build/uefi/user/crt0.o build/uefi/user/ulib.o build/uefi/user/udp_main.o
+
 build/uefi/user/calc_blob.o: uefi/user/calc_blob.S build/uefi-calc.elf | build
+	mkdir -p $(dir $@)
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
+
+build/uefi/user/dns_blob.o: uefi/user/dns_blob.S build/uefi-dns.elf | build
+	mkdir -p $(dir $@)
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
+
+build/uefi/user/wget_blob.o: uefi/user/wget_blob.S build/uefi-wget.elf | build
+	mkdir -p $(dir $@)
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
+
+build/uefi/user/tcp_blob.o: uefi/user/tcp_blob.S build/uefi-tcp.elf | build
+	mkdir -p $(dir $@)
+	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
+
+build/uefi/user/udp_blob.o: uefi/user/udp_blob.S build/uefi-udp.elf | build
 	mkdir -p $(dir $@)
 	"$(UEFI_CLANG)" $(UEFI_CFLAGS) -c $< -o $@
 
@@ -146,5 +193,5 @@ run-uefi: usb-image-local
 	./dev/run-uefi.sh
 
 clean:
-	rm -rf build/uefi build/testos-uefi.elf build/uefi-calc.elf
+	rm -rf build/uefi build/testos-uefi.elf $(USER_PROGRAMS)
 	rm -f build/*.log build/*.ppm

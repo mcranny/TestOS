@@ -16,6 +16,15 @@
 #include "icmp.h"
 #include "ipv4.h"
 #include "udp.h"
+#include "netif.h"
+#include "route.h"
+#include "arp.h"
+#include "dhcp.h"
+#include "dns.h"
+#include "socket.h"
+#include "tcp.h"
+#include "mac.h"
+#include "http.h"
 
 #define LINE_MAX 256
 
@@ -81,6 +90,10 @@ static void next_arg(const char **cursor, char *out, size_t out_size)
     *cursor = skip_spaces(s);
 }
 
+static int shell_parse_ipv4(const char *text, ipv4_addr_t *out);
+static int shell_parse_ipv4_prefix(const char **text_inout, ipv4_addr_t *out);
+static int shell_parse_u16(const char **text_inout, uint16_t *out);
+
 static int resolve(const char *path, char *out)
 {
     return path_resolve(cwd, path, out, FS_MAX_PATH);
@@ -124,8 +137,16 @@ static void shell_help(void)
     console_puts("  ps       - list processes\n");
     console_puts("  kill     - terminate a process\n");
     console_puts("  netrx    - poll E1000 for received Ethernet frames\n");
-    console_puts("  ping     - ICMP echo request to an IPv4 address\n");
+    console_puts("  ifconfig - show/set interface configuration\n");
+    console_puts("  ip       - alias for ifconfig\n");
+    console_puts("  route    - show/set default gateway\n");
+    console_puts("  arp      - show/delete ARP cache\n");
+    console_puts("  dhcp     - renew DHCP lease\n");
+    console_puts("  dns      - resolve a hostname (A record)\n");
+    console_puts("  netstat  - network interface and socket status\n");
+    console_puts("  ping     - ICMP echo request to an IPv4 address or host\n");
     console_puts("  udp      - send a UDP datagram\n");
+    console_puts("  wget     - HTTP GET to a TFS file\n");
     console_puts("  fsck     - check filesystem consistency\n");
     console_puts("  reboot   - reboot the system\n");
     console_puts("  halt     - halt the CPU\n");
@@ -473,6 +494,476 @@ static void shell_calc(const char *args)
     }
 }
 
+static void shell_print_ip(ipv4_addr_t ip)
+{
+    char ip_str[16];
+    ipv4_addr_format(ip, ip_str);
+    console_puts(ip_str);
+}
+
+static void shell_print_mac(const mac_addr_t *mac)
+{
+    char mac_str[18];
+    if (mac == NULL) {
+        console_puts("(none)");
+        return;
+    }
+    mac_format(mac, mac_str);
+    console_puts(mac_str);
+}
+
+static void shell_ifconfig(const char *args)
+{
+    netif_t *nif;
+    char name[NETIF_NAME_MAX];
+    const char *cursor = skip_spaces(args);
+
+    if (*cursor == '\0') {
+        uint32_t i;
+        for (i = 0; i < netif_count(); i++) {
+            nif = netif_get_index(i);
+            if (nif == NULL || !nif->active) {
+                continue;
+            }
+            console_puts("Interface: ");
+            console_puts(nif->name);
+            console_puts("\nMAC:       ");
+            shell_print_mac(&nif->mac);
+            console_puts("\nIP:        ");
+            shell_print_ip(nif->ip);
+            console_puts("\nMask:      ");
+            shell_print_ip(nif->netmask);
+            console_puts("\nGateway:   ");
+            shell_print_ip(nif->gateway);
+            console_puts("\nDNS:       ");
+            shell_print_ip(nif->dns[0]);
+            console_puts("\nRX:  ");
+            print_u32(nif->rx_packets);
+            console_puts(" packets\nTX:  ");
+            print_u32(nif->tx_packets);
+            console_puts(" packets\nDROP: ");
+            print_u32(nif->drop_packets);
+            console_puts("\n");
+        }
+        return;
+    }
+
+    next_arg(&cursor, name, sizeof(name));
+    nif = netif_find(name);
+    if (nif == NULL) {
+        nif = netif_get_primary();
+    }
+    if (nif == NULL) {
+        console_puts("ifconfig: no interface\n");
+        return;
+    }
+
+    if (command_is(cursor, "up")) {
+        netif_add_flags(nif, NETIF_FLAG_UP | NETIF_FLAG_RUNNING);
+        console_puts("up\n");
+        return;
+    }
+    if (command_is(cursor, "down")) {
+        netif_clear_flags(nif, NETIF_FLAG_UP | NETIF_FLAG_RUNNING);
+        console_puts("down\n");
+        return;
+    }
+
+    {
+        ipv4_addr_t ip = 0;
+        ipv4_addr_t mask = nif->netmask;
+        ipv4_addr_t gw = nif->gateway;
+        if (!shell_parse_ipv4_prefix(&cursor, &ip)) {
+            console_puts("usage: ifconfig [iface] [<ip> [mask] [gw]]\n");
+            return;
+        }
+        cursor = skip_spaces(cursor);
+        if (*cursor != '\0') {
+            (void)shell_parse_ipv4_prefix(&cursor, &mask);
+        }
+        cursor = skip_spaces(cursor);
+        if (*cursor != '\0') {
+            (void)shell_parse_ipv4_prefix(&cursor, &gw);
+        }
+        netif_set_addr(nif, ip, mask != 0 ? mask : IPV4_ADDR(255, 255, 255, 0), gw);
+        arp_set_local_ip(ip);
+        route_set_defaults_from_netif(nif);
+        console_puts("configured\n");
+    }
+}
+
+static void shell_route(const char *args)
+{
+    const char *cursor = skip_spaces(args);
+    uint32_t i;
+
+    if (*cursor == '\0') {
+        for (i = 0; i < route_count(); i++) {
+            const route_entry_t *r = route_get_index(i);
+            if (r == NULL) {
+                continue;
+            }
+            console_puts("dst ");
+            shell_print_ip(r->network);
+            console_puts(" mask ");
+            shell_print_ip(r->netmask);
+            console_puts(" gw ");
+            shell_print_ip(r->gateway);
+            if (r->nif != NULL) {
+                console_puts(" dev ");
+                console_puts(r->nif->name);
+            }
+            console_puts("\n");
+        }
+        return;
+    }
+
+    if (command_is(cursor, "add") || command_is(cursor, "default")) {
+        ipv4_addr_t gw = 0;
+        netif_t *nif = netif_get_primary();
+        if (command_is(cursor, "add")) {
+            cursor += 3;
+        } else {
+            cursor += 7;
+        }
+        cursor = skip_spaces(cursor);
+        if (command_is(cursor, "default")) {
+            cursor += 7;
+            cursor = skip_spaces(cursor);
+        }
+        if (command_is(cursor, "gw") || command_is(cursor, "via")) {
+            while (*cursor && *cursor != ' ') cursor++;
+            cursor = skip_spaces(cursor);
+        }
+        if (!shell_parse_ipv4(cursor, &gw)) {
+            console_puts("usage: route add default gw <ip>\n");
+            return;
+        }
+        if (nif != NULL) {
+            nif->gateway = gw;
+            route_set_default_gateway(gw, nif);
+        }
+        console_puts("route set\n");
+        return;
+    }
+    console_puts("usage: route | route add default gw <ip>\n");
+}
+
+static void shell_arp(const char *args)
+{
+    const char *cursor = skip_spaces(args);
+    uint32_t i;
+    arp_cache_entry_t entry;
+
+    if (*cursor == '\0') {
+        for (i = 0; arp_cache_get(i, &entry); i++) {
+            shell_print_ip(entry.ip);
+            console_puts(" at ");
+            shell_print_mac(&entry.mac);
+            console_puts("\n");
+        }
+        if (i == 0) {
+            console_puts("(empty)\n");
+        }
+        return;
+    }
+    if (command_is(cursor, "del") || command_is(cursor, "delete")) {
+        ipv4_addr_t ip;
+        while (*cursor && *cursor != ' ') cursor++;
+        cursor = skip_spaces(cursor);
+        if (!shell_parse_ipv4(cursor, &ip)) {
+            console_puts("usage: arp del <ip>\n");
+            return;
+        }
+        if (arp_delete(ip)) {
+            console_puts("deleted\n");
+        } else {
+            console_puts("not found\n");
+        }
+        return;
+    }
+    console_puts("usage: arp | arp del <ip>\n");
+}
+
+static void shell_dhcp(const char *args)
+{
+    netif_t *nif = netif_get_primary();
+    (void)args;
+    if (nif == NULL) {
+        console_puts("dhcp: no interface\n");
+        return;
+    }
+    console_puts("dhcp: renewing...\n");
+    if (dhcp_renew(nif)) {
+        console_puts("dhcp: bound ");
+        shell_print_ip(nif->ip);
+        console_puts("\n");
+    } else {
+        netif_apply_static_defaults(nif);
+        arp_set_local_ip(nif->ip);
+        route_set_defaults_from_netif(nif);
+        console_puts("dhcp: failed; static fallback\n");
+    }
+}
+
+static void shell_dns(const char *args)
+{
+    ipv4_addr_t ip;
+    char host[96];
+    const char *cursor = skip_spaces(args);
+
+    next_arg(&cursor, host, sizeof(host));
+    if (host[0] == '\0') {
+        console_puts("usage: dns <hostname>\n");
+        return;
+    }
+    if (!dns_resolve(host, &ip)) {
+        console_puts("dns: lookup failed\n");
+        return;
+    }
+    console_puts(host);
+    console_puts(" -> ");
+    shell_print_ip(ip);
+    console_puts("\n");
+}
+
+static void shell_netstat(const char *args)
+{
+    netif_t *nif = netif_get_primary();
+    uint32_t i;
+    socket_info_t sinfo;
+    tcp_conn_info_t tinfo;
+    (void)args;
+
+    if (nif != NULL) {
+        console_puts("Interface: ");
+        console_puts(nif->name);
+        console_puts("\nMAC:       ");
+        shell_print_mac(&nif->mac);
+        console_puts("\nIP:        ");
+        shell_print_ip(nif->ip);
+        console_puts("\nMask:      ");
+        shell_print_ip(nif->netmask);
+        console_puts("\nGateway:   ");
+        shell_print_ip(nif->gateway);
+        console_puts("\nDNS:       ");
+        shell_print_ip(nif->dns[0]);
+        console_puts("\nRX:  ");
+        print_u32(nif->rx_packets);
+        console_puts(" packets\nTX:  ");
+        print_u32(nif->tx_packets);
+        console_puts(" packets\nDROP: ");
+        print_u32(nif->drop_packets);
+        console_puts("\n\n");
+    }
+
+    console_puts("TCP connections:\n");
+    for (i = 0; tcp_conn_get(i, &tinfo); i++) {
+        console_puts("  ");
+        console_puts(tcp_state_name(tinfo.state));
+        console_puts(" local:");
+        print_u32(tinfo.local_port);
+        console_puts(" remote ");
+        shell_print_ip(tinfo.remote_ip);
+        console_puts(":");
+        print_u32(tinfo.remote_port);
+        console_puts("\n");
+    }
+    if (i == 0) {
+        console_puts("  (none)\n");
+    }
+
+    console_puts("Sockets:\n");
+    for (i = 0; socket_get_info(i, &sinfo); i++) {
+        console_puts("  h=");
+        print_u32((uint32_t)sinfo.handle);
+        console_puts(" st=");
+        print_u32((uint32_t)sinfo.state);
+        console_puts(" port=");
+        print_u32(sinfo.port);
+        console_puts("\n");
+    }
+    if (i == 0) {
+        console_puts("  (none)\n");
+    }
+}
+
+static void shell_wget(const char *args)
+{
+    char url[128];
+    char outpath[FS_MAX_PATH];
+    char host[64];
+    char path[96];
+    ipv4_addr_t ip;
+    uint16_t port = 80;
+    int sock;
+    uint16_t local_port;
+    static uint16_t wget_ephemeral = 40000U;
+    char req[192];
+    uint32_t ri = 0;
+    uint8_t buf[1500];
+    uint8_t body[1400];
+    uint32_t body_len = 0;
+    uint32_t start;
+    int header_done = 0;
+    uint32_t header_end = 0;
+    int n;
+    const char *cursor = skip_spaces(args);
+    uint32_t i;
+    uint32_t hi = 0;
+    uint32_t pi = 0;
+    int in_path = 0;
+
+    next_arg(&cursor, url, sizeof(url));
+    next_arg(&cursor, outpath, sizeof(outpath));
+    if (url[0] == '\0' || outpath[0] == '\0') {
+        console_puts("usage: wget <host[/path]|http://host/path> <file>\n");
+        return;
+    }
+
+    /* Strip optional http:// */
+    i = 0;
+    if (url[0] == 'h' && url[1] == 't' && url[2] == 't' && url[3] == 'p' &&
+        url[4] == ':' && url[5] == '/' && url[6] == '/') {
+        i = 7;
+    }
+    host[0] = '\0';
+    path[0] = '/';
+    path[1] = '\0';
+    while (url[i] != '\0' && url[i] != '/' && url[i] != ':' && hi + 1U < sizeof(host)) {
+        host[hi++] = url[i++];
+    }
+    host[hi] = '\0';
+    if (url[i] == ':') {
+        i++;
+        port = 0;
+        while (url[i] >= '0' && url[i] <= '9') {
+            port = (uint16_t)(port * 10U + (uint16_t)(url[i] - '0'));
+            i++;
+        }
+        if (port == 0) {
+            port = 80;
+        }
+    }
+    if (url[i] == '/') {
+        pi = 0;
+        while (url[i] != '\0' && pi + 1U < sizeof(path)) {
+            path[pi++] = url[i++];
+        }
+        path[pi] = '\0';
+        in_path = 1;
+    }
+    (void)in_path;
+
+    if (!dns_resolve(host, &ip)) {
+        console_puts("wget: resolve failed\n");
+        return;
+    }
+
+    sock = socket_create();
+    if (sock < 0) {
+        console_puts("wget: socket failed\n");
+        return;
+    }
+    local_port = wget_ephemeral++;
+    if (wget_ephemeral < 40000U) {
+        wget_ephemeral = 40000U;
+    }
+    if (socket_connect(sock, ip, port, local_port) < 0) {
+        console_puts("wget: connect failed\n");
+        socket_close(sock);
+        return;
+    }
+
+    /* Build request */
+    {
+        static const char p1[] = "GET ";
+        static const char p2[] = " HTTP/1.0\r\nHost: ";
+        static const char p3[] = "\r\nConnection: close\r\n\r\n";
+        for (i = 0; p1[i]; i++) req[ri++] = p1[i];
+        for (i = 0; path[i] && ri + 1U < sizeof(req); i++) req[ri++] = path[i];
+        for (i = 0; p2[i] && ri + 1U < sizeof(req); i++) req[ri++] = p2[i];
+        for (i = 0; host[i] && ri + 1U < sizeof(req); i++) req[ri++] = host[i];
+        for (i = 0; p3[i] && ri + 1U < sizeof(req); i++) req[ri++] = p3[i];
+        req[ri] = '\0';
+    }
+
+    start = timer_get_ticks();
+    n = SOCKET_WOULD_BLOCK;
+    while ((timer_get_ticks() - start) < (8U * TIMER_FREQUENCY)) {
+        (void)ethernet_poll();
+        http_poll();
+        n = socket_send(sock, req, (uint16_t)ri);
+        if (n > 0) {
+            break;
+        }
+        if (n == SOCKET_ERROR) {
+            console_puts("wget: send failed\n");
+            socket_close(sock);
+            return;
+        }
+    }
+    if (n <= 0) {
+        console_puts("wget: send timeout\n");
+        socket_close(sock);
+        return;
+    }
+
+    start = timer_get_ticks();
+    while ((timer_get_ticks() - start) < (8U * TIMER_FREQUENCY)) {
+        (void)ethernet_poll();
+        http_poll();
+        n = socket_recv(sock, buf, sizeof(buf));
+        if (n > 0) {
+            uint32_t j;
+            for (j = 0; j < (uint32_t)n; j++) {
+                if (!header_done) {
+                    /* accumulate into body temporarily for header scan */
+                    if (body_len < sizeof(body)) {
+                        body[body_len++] = buf[j];
+                    }
+                    if (body_len >= 4 &&
+                        body[body_len - 4] == '\r' && body[body_len - 3] == '\n' &&
+                        body[body_len - 2] == '\r' && body[body_len - 1] == '\n') {
+                        header_done = 1;
+                        header_end = body_len;
+                    }
+                } else if (body_len < sizeof(body)) {
+                    body[body_len++] = buf[j];
+                }
+            }
+        } else if (n == SOCKET_EOF) {
+            break;
+        } else if (n == SOCKET_ERROR) {
+            break;
+        }
+    }
+    (void)socket_close(sock);
+
+    if (!header_done) {
+        console_puts("wget: no response\n");
+        return;
+    }
+
+    {
+        uint32_t content_len = body_len - header_end;
+        char resolved[FS_MAX_PATH];
+        if (resolve(outpath, resolved) != 0) {
+            console_puts("wget: bad path\n");
+            return;
+        }
+        if (!tfs_write(resolved, &body[header_end], content_len, 0)) {
+            console_puts("wget: write failed\n");
+            return;
+        }
+        console_puts("wget: saved ");
+        print_u32(content_len);
+        console_puts(" bytes to ");
+        console_puts(resolved);
+        console_puts("\n");
+    }
+}
+
 static void shell_netrx(void)
 {
     int frames;
@@ -539,25 +1030,35 @@ static void shell_ping(const char *args)
 {
     ipv4_addr_t dst;
     char ip_str[16];
+    char host[96];
     uint64_t start;
+    uint64_t sent_tick;
     static uint16_t ping_seq = 1U;
     const uint16_t ping_id = 0x544FU;
     uint16_t seq;
+    uint32_t count = 4;
+    uint32_t ok = 0;
+    uint32_t i;
+    const char *cursor = skip_spaces(args);
 
-    args = skip_spaces(args);
-    if (*args == '\0') {
-        console_puts("usage: ping <ip>\n");
+    if (*cursor == '\0') {
+        console_puts("usage: ping <ip|host> [count]\n");
         return;
     }
 
-    if (!shell_parse_ipv4(args, &dst)) {
-        console_puts("ping: invalid IPv4 address\n");
-        return;
+    next_arg(&cursor, host, sizeof(host));
+    if (*cursor >= '0' && *cursor <= '9') {
+        uint16_t c16 = 0;
+        if (shell_parse_u16(&cursor, &c16) && c16 > 0 && c16 <= 20) {
+            count = c16;
+        }
     }
 
-    seq = ping_seq++;
-    if (ping_seq == 0U) {
-        ping_seq = 1U;
+    if (!shell_parse_ipv4(host, &dst)) {
+        if (!dns_resolve(host, &dst)) {
+            console_puts("ping: resolve failed\n");
+            return;
+        }
     }
 
     ipv4_addr_format(dst, ip_str);
@@ -565,23 +1066,41 @@ static void shell_ping(const char *args)
     console_puts(ip_str);
     console_puts("\n");
 
-    icmp_arm_echo_wait(dst, ping_id, seq);
-    if (!icmp_send_echo_request(dst, ping_id, seq)) {
-        /* ARP may still be resolving; keep waiting for a reply. */
-    }
+    for (i = 0; i < count; i++) {
+        seq = ping_seq++;
+        if (ping_seq == 0U) {
+            ping_seq = 1U;
+        }
 
-    start = timer_get_ticks();
-    while ((timer_get_ticks() - start) < (3U * (uint64_t)TIMER_FREQUENCY)) {
-        (void)ethernet_poll();
-        if (icmp_echo_wait_done()) {
-            console_puts("Reply from ");
-            console_puts(ip_str);
-            console_puts("\n");
-            return;
+        icmp_arm_echo_wait(dst, ping_id, seq);
+        sent_tick = timer_get_ticks();
+        if (!icmp_send_echo_request(dst, ping_id, seq)) {
+            /* ARP may still be resolving */
+        }
+
+        start = timer_get_ticks();
+        while ((timer_get_ticks() - start) < (2U * (uint64_t)TIMER_FREQUENCY)) {
+            (void)ethernet_poll();
+            if (icmp_echo_wait_done()) {
+                uint32_t rtt = (uint32_t)(timer_get_ticks() - sent_tick);
+                console_puts("Reply from ");
+                console_puts(ip_str);
+                console_puts(" time=");
+                print_u32(rtt);
+                console_puts(" ticks\n");
+                ok++;
+                break;
+            }
+        }
+        if (!icmp_echo_wait_done()) {
+            console_puts("Request timed out\n");
         }
     }
-
-    console_puts("Request timed out\n");
+    console_puts("ping: ");
+    print_u32(ok);
+    console_puts("/");
+    print_u32(count);
+    console_puts(" replies\n");
 }
 
 static int shell_parse_u16(const char **text_inout, uint16_t *out)
@@ -743,6 +1262,15 @@ static void run_line(char *line)
     if (command_is(line, "ps")) { shell_ps(); return; }
     if (command_is(line, "kill")) { shell_kill(line + 4); return; }
     if (command_is(line, "netrx")) { shell_netrx(); return; }
+    if (command_is(line, "ifconfig")) { shell_ifconfig(line + 8); return; }
+    if (command_is(line, "ip")) { shell_ifconfig(line + 2); return; }
+    if (command_is(line, "route")) { shell_route(line + 5); return; }
+    if (command_is(line, "arp")) { shell_arp(line + 3); return; }
+    if (command_is(line, "dhcp")) { shell_dhcp(line + 4); return; }
+    if (command_is(line, "dns")) { shell_dns(line + 3); return; }
+    if (command_is(line, "nslookup")) { shell_dns(line + 8); return; }
+    if (command_is(line, "netstat")) { shell_netstat(line + 7); return; }
+    if (command_is(line, "wget")) { shell_wget(line + 4); return; }
     if (command_is(line, "ping")) { shell_ping(line + 4); return; }
     if (command_is(line, "udp")) { shell_udp(line + 3); return; }
     if (command_is(line, "fsck")) { shell_fsck(); return; }

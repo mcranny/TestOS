@@ -2,6 +2,7 @@
 #define TESTOS_UEFI_NET_E1000_H
 
 #include "types.h"
+#include "mac.h"
 
 #define E1000_VENDOR_ID  0x8086U
 #define E1000_DEVICE_ID  0x10D3U
@@ -63,11 +64,6 @@
 
 typedef struct
 {
-    uint8_t bytes[6];
-} mac_address_t;
-
-typedef struct
-{
     uint64_t buffer_addr;
     uint16_t length;
     uint8_t cso;
@@ -91,7 +87,7 @@ typedef struct
 uint32_t e1000_read_reg(uint32_t offset);
 void e1000_write_reg(uint32_t offset, uint32_t value);
 
-const mac_address_t *e1000_get_mac(void);
+const mac_addr_t *e1000_get_mac(void);
 void e1000_initialize(void);
 
 int e1000_transmit(const void *data, uint16_t length);

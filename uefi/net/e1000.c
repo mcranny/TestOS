@@ -1,5 +1,6 @@
 #include "e1000.h"
 #include "ethernet.h"
+#include "netif.h"
 #include "platform.h"
 #include "drivers/pci.h"
 #include "drivers/device.h"
@@ -15,7 +16,8 @@
 #define E1000_ETHERTYPE_TEST   0x88B5U
 
 static volatile uint32_t *e1000_mmio = NULL;
-static mac_address_t e1000_mac;
+static mac_addr_t e1000_mac;
+static netif_t *e1000_netif = NULL;
 static int e1000_ready = 0;
 static uint8_t e1000_irq = 0xFFU;
 static int e1000_irq_logged = 0;
@@ -68,13 +70,38 @@ void e1000_write_reg(uint32_t offset, uint32_t value)
     e1000_mmio[offset / 4U] = value;
 }
 
-const mac_address_t *e1000_get_mac(void)
+const mac_addr_t *e1000_get_mac(void)
 {
     if (!e1000_ready) {
         return NULL;
     }
     return &e1000_mac;
 }
+
+static int e1000_netif_transmit(netif_t *nif, const void *data, uint16_t length)
+{
+    int ok;
+
+    (void)nif;
+    ok = e1000_transmit(data, length);
+    if (ok && e1000_netif != NULL) {
+        netif_inc_tx(e1000_netif);
+    } else if (!ok && e1000_netif != NULL) {
+        netif_inc_drop(e1000_netif);
+    }
+    return ok;
+}
+
+static int e1000_netif_poll(netif_t *nif)
+{
+    (void)nif;
+    return e1000_poll_rx();
+}
+
+static const netif_ops_t e1000_ops = {
+    e1000_netif_transmit,
+    e1000_netif_poll
+};
 
 static void e1000_hex_nibble(uint8_t nibble, char *out)
 {
@@ -347,7 +374,12 @@ int e1000_poll_rx(void)
         buf = rx_buffers[rx_next];
 
         if (length >= ETH_HDR_LEN && buf != NULL) {
+            if (e1000_netif != NULL) {
+                netif_inc_rx(e1000_netif);
+            }
             ethernet_input(buf, length);
+        } else if (e1000_netif != NULL) {
+            netif_inc_drop(e1000_netif);
         }
 
         desc->status = 0;
@@ -482,6 +514,7 @@ void e1000_initialize(void)
     char mac_line[40];
 
     e1000_ready = 0;
+    e1000_netif = NULL;
     e1000_irq = 0xFFU;
     e1000_irq_logged = 0;
     tx_configured = 0;
@@ -570,6 +603,12 @@ void e1000_initialize(void)
     klog(KLOG_INFO, "E1000", "Interrupt handler installed");
 
     e1000_ready = 1;
+    e1000_netif = netif_register("e1000e0", &e1000_mac, &e1000_ops, NULL);
+    if (e1000_netif == NULL) {
+        klog(KLOG_WARN, "E1000", "netif register failed");
+    } else {
+        netif_apply_static_defaults(e1000_netif);
+    }
     log_info("E1000: ready");
 
     e1000_send_test_frame();

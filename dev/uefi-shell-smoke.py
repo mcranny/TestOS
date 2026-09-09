@@ -2,6 +2,7 @@
 """Drive TestOS UEFI shell over QEMU TCP serial for acceptance checks."""
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import socket
@@ -10,13 +11,51 @@ import sys
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-QEMU = pathlib.Path(r"C:\Program Files\qemu\qemu-system-x86_64.exe")
-CODE = pathlib.Path(r"C:\Program Files\qemu\share\edk2-x86_64-code.fd")
 VARS = ROOT / "build" / "ovmf-vars.fd"
 IMG = ROOT / "build" / "testos-usb-local.img"
 DATA = ROOT / "build" / "uefi-data.img"
 OUT = ROOT / "build" / "uefi-shell-test.log"
-PORT = 5555
+PORT = int(os.environ.get("TESTOS_SERIAL_PORT", "5555"))
+
+
+def resolve_qemu() -> pathlib.Path:
+    for key in ("TESTOS_QEMU", "QEMU"):
+        value = os.environ.get(key)
+        if value:
+            return pathlib.Path(value)
+    candidates = (
+        pathlib.Path(r"C:\Program Files\qemu\qemu-system-x86_64.exe"),
+        pathlib.Path("/usr/bin/qemu-system-x86_64"),
+        pathlib.Path("/usr/local/bin/qemu-system-x86_64"),
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return pathlib.Path("qemu-system-x86_64")
+
+
+def resolve_ovmf_code() -> pathlib.Path:
+    for key in ("TESTOS_OVMF_CODE", "OVMF_CODE"):
+        value = os.environ.get(key)
+        if value:
+            return pathlib.Path(value)
+    candidates = (
+        pathlib.Path(r"C:\Program Files\qemu\share\edk2-x86_64-code.fd"),
+        pathlib.Path("/usr/share/OVMF/OVMF_CODE_4M.fd"),
+        pathlib.Path("/usr/share/OVMF/OVMF_CODE.fd"),
+        pathlib.Path("/usr/share/edk2/ovmf/OVMF_CODE.fd"),
+        pathlib.Path("/usr/share/edk2-ovmf/x64/OVMF_CODE.fd"),
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError(
+        "OVMF code firmware not found; set TESTOS_OVMF_CODE to the firmware path"
+    )
+
+
+QEMU = resolve_qemu()
+CODE = resolve_ovmf_code()
 
 
 def strip_ansi(text: str) -> str:
@@ -142,6 +181,7 @@ def main() -> int:
         ("calc 2+3*4", 4.0),
         ("./calc 10-3", 4.0),
         ("ps", 1.5),
+        ("ping 10.0.2.2", 5.0),
         ("ls", 1.2),
     ]
     print("boot1 (fresh data)...")
@@ -156,6 +196,7 @@ def main() -> int:
     ok &= check(text1, "\n14\n", "calc 2+3*4")
     ok &= check(text1, "\n7\n", "calc 10-3")
     ok &= check(text1, "PID STATE NAME", "ps")
+    ok &= check(text1, "Reply from 10.0.2.2", "ping gateway")
 
     print("boot2 (persist)...")
     text2 = run_boot(False, [("cat persist.txt", 1.2), ("ls", 1.2)])

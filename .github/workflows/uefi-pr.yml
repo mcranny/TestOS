@@ -1,0 +1,96 @@
+name: UEFI PR checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "release/**"
+
+jobs:
+  uefi-reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build and QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            lld \
+            make \
+            python3 \
+            python3-pip \
+            qemu-system-x86 \
+            ovmf \
+            mtools \
+            gdisk \
+            wget \
+            ca-certificates \
+            xz-utils
+
+      - name: Install Python image tooling
+        run: python3 -m pip install --user pyfatfs
+
+      - name: Fetch pinned Limine UEFI loader
+        env:
+          LIMINE_VERSION: "12.6.0"
+          LIMINE_SHA256: "44fb480294463c15823bba5378c955b46d15d08fc7b5a74de49fef2953d1878d"
+        run: |
+          mkdir -p build/limine-bin
+          wget -q -O /tmp/limine.tar.xz \
+            "https://github.com/limine-bootloader/limine/releases/download/v${LIMINE_VERSION}/limine-binary.tar.xz"
+          echo "${LIMINE_SHA256}  /tmp/limine.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/limine.tar.xz -C /tmp
+          # Binary tarball layout varies slightly by release; locate BOOTX64.EFI.
+          efi="$(find /tmp -type f -name BOOTX64.EFI | head -n 1)"
+          test -n "${efi}"
+          cp "${efi}" build/limine-bin/BOOTX64.EFI
+
+      - name: Resolve OVMF firmware path
+        id: ovmf
+        run: |
+          for path in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/ovmf/OVMF_CODE.fd \
+            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd
+          do
+            if [ -f "${path}" ]; then
+              echo "code=${path}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "OVMF code firmware not found" >&2
+          exit 1
+
+      - name: Build UEFI kernel and local USB image
+        run: |
+          make uefi-kernel
+          python3 dev/make-local-usb-image.py
+
+      - name: Run UEFI shell reliability smoke
+        env:
+          TESTOS_OVMF_CODE: ${{ steps.ovmf.outputs.code }}
+          TESTOS_SERIAL_PORT: "5555"
+        run: python3 dev/uefi-shell-smoke.py
+
+      - name: Run UEFI HTTP interop smoke
+        env:
+          TESTOS_OVMF_CODE: ${{ steps.ovmf.outputs.code }}
+          TESTOS_SERIAL_PORT: "5556"
+        run: python3 dev/uefi-http-smoke.py
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-smoke-logs
+          path: |
+            build/uefi-shell-test.log
+            build/*.log
+          if-no-files-found: ignore

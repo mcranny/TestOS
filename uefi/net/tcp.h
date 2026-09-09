@@ -30,6 +30,19 @@ int tcp_register_listener(uint16_t port, const tcp_app_callbacks_t *callbacks);
 int tcp_unregister_listener(uint16_t port);
 void tcp_set_app_callbacks(const tcp_app_callbacks_t *callbacks);
 
+typedef struct
+{
+    int used;
+    int state;
+    ipv4_addr_t remote_ip;
+    uint16_t local_port;
+    uint16_t remote_port;
+} tcp_conn_info_t;
+
+const char *tcp_state_name(int state);
+uint32_t tcp_conn_count(void);
+int tcp_conn_get(uint32_t index, tcp_conn_info_t *out);
+
 /* Focused freestanding checks used only by the headless regression build. */
 int tcp_selftest(void);
 void tcp_test_drop_next_segment(void);

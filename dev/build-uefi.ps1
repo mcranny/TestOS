@@ -13,14 +13,27 @@ $cflags = @(
     "-nostdlib", "-nostdinc", "-Wall", "-Wextra", "-Iuefi", "-Iuefi/net"
 )
 
-Write-Host "Building uefi-calc.elf..."
+Write-Host "Building userland programs..."
 New-Item -ItemType Directory -Force -Path build/uefi/user | Out-Null
-$ucflags = @("--target=x86_64-unknown-none-elf","-m64","-ffreestanding","-fno-pie","-fno-pic","-fno-stack-protector","-nostdlib","-nostdinc","-Wall","-Iuefi/user")
+$ucflags = @(
+    "--target=x86_64-unknown-none-elf","-m64","-ffreestanding","-fno-pie","-fno-pic",
+    "-fno-stack-protector","-nostdlib","-nostdinc","-Wall","-Iuefi","-Iuefi/user"
+)
 & $clang @ucflags -c uefi/user/crt0.S -o build/uefi/user/crt0.o
 & $clang @ucflags -c uefi/user/ulib.c -o build/uefi/user/ulib.o
-& $clang @ucflags -c uefi/user/calc.c -o build/uefi/user/calc.o
-& $ld -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o build/uefi-calc.elf build/uefi/user/crt0.o build/uefi/user/ulib.o build/uefi/user/calc.o
-if ($LASTEXITCODE -ne 0) { throw "calc build failed" }
+function Build-UserElf($name, $src) {
+    Write-Host "Building uefi-$name.elf..."
+    & $clang @ucflags -c $src -o "build/uefi/user/$name.o"
+    if ($LASTEXITCODE -ne 0) { throw "$name compile failed" }
+    & $ld -m elf_x86_64 -nostdlib -T uefi/user/user.ld -o "build/uefi-$name.elf" `
+        build/uefi/user/crt0.o build/uefi/user/ulib.o "build/uefi/user/$name.o"
+    if ($LASTEXITCODE -ne 0) { throw "$name link failed" }
+}
+Build-UserElf "calc" "uefi/user/calc.c"
+Build-UserElf "dns" "uefi/user/dns_main.c"
+Build-UserElf "wget" "uefi/user/wget_main.c"
+Build-UserElf "tcp" "uefi/user/tcp_main.c"
+Build-UserElf "udp" "uefi/user/udp_main.c"
 
 $cSources = @(
     "uefi/kernel.c",
@@ -61,6 +74,8 @@ $cSources = @(
     "uefi/net/e1000.c",
     "uefi/net/checksum.c",
     "uefi/net/mac.c",
+    "uefi/net/netif.c",
+    "uefi/net/route.c",
     "uefi/net/ethernet.c",
     "uefi/net/arp.c",
     "uefi/net/ipv4.c",
@@ -68,6 +83,8 @@ $cSources = @(
     "uefi/net/udp.c",
     "uefi/net/tcp.c",
     "uefi/net/socket.c",
+    "uefi/net/dhcp.c",
+    "uefi/net/dns.c",
     "uefi/net/http.c",
     "uefi/shell/shell.c"
 )
@@ -78,7 +95,11 @@ $sSources = @(
     "uefi/arch/gdt_load.S",
     "uefi/task/switch.S",
     "uefi/user/syscall_entry.S",
-    "uefi/user/calc_blob.S"
+    "uefi/user/calc_blob.S",
+    "uefi/user/dns_blob.S",
+    "uefi/user/wget_blob.S",
+    "uefi/user/tcp_blob.S",
+    "uefi/user/udp_blob.S"
 )
 
 $objects = @()

@@ -2,6 +2,6 @@
 #define TESTOS_UEFI_VERSION_H
 
 #define TESTOS_NAME    "TestOS"
-#define TESTOS_VERSION "0.12"
+#define TESTOS_VERSION "0.13"
 
 #endif

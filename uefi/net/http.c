@@ -2,13 +2,15 @@
 #include "socket.h"
 #include "platform.h"
 #include "lib/string.h"
+#include "fs/tfs.h"
+#include "fs/fs.h"
 
 #define HTTP_PORT 8080U
-#define HTTP_CLIENT_MAX 4U
+#define HTTP_CLIENT_MAX 8U
 #define HTTP_REQUEST_MAX 1024U
 #define HTTP_BODY_LEN 1400U
-/* Status-line + Content-Type/Length/Connection for body up to HTTP_BODY_LEN. */
 #define HTTP_HEADER_MAX 256U
+#define HTTP_PATH_MAX 96U
 
 typedef struct {
     int handle;
@@ -18,6 +20,7 @@ typedef struct {
     uint16_t body_len;
     uint16_t body_sent;
     uint8_t responding;
+    uint8_t keep_alive;
     char request[HTTP_REQUEST_MAX];
     char header[HTTP_HEADER_MAX];
     char body[HTTP_BODY_LEN];
@@ -72,7 +75,48 @@ static int header_append_u16(http_client_t *c, uint16_t value)
     return header_append(c, digits, count);
 }
 
-static void make_response(http_client_t *c, int status)
+static int request_wants_keepalive(const char *req, uint16_t len)
+{
+    uint16_t i;
+    for (i = 0; i + 22U < len; i++) {
+        if ((req[i] == 'C' || req[i] == 'c') &&
+            (req[i + 1] == 'o' || req[i + 1] == 'O') &&
+            req[i + 10] == ':' ) {
+            /* rough match Connection: */
+            uint16_t j = (uint16_t)(i + 11U);
+            while (j < len && (req[j] == ' ' || req[j] == '\t')) {
+                j++;
+            }
+            if (j + 10U <= len &&
+                (req[j] == 'k' || req[j] == 'K') &&
+                (req[j + 1] == 'e' || req[j + 1] == 'E') &&
+                (req[j + 4] == 'a' || req[j + 4] == 'A')) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void extract_path(const char *req, uint16_t len, char *path, uint16_t path_cap)
+{
+    uint16_t i = 4; /* after "GET " */
+    uint16_t n = 0;
+
+    if (path == NULL || path_cap == 0) {
+        return;
+    }
+    path[0] = '\0';
+    if (len < 5 || req[0] != 'G') {
+        return;
+    }
+    while (i < len && req[i] != ' ' && req[i] != '\r' && n + 1U < path_cap) {
+        path[n++] = req[i++];
+    }
+    path[n] = '\0';
+}
+
+static void make_response(http_client_t *c, int status, const char *ctype, int keep)
 {
     const char *reason;
     const char *prefix = "<html><body><h1>TestOS HTTP Server</h1><p>Guest-served page.</p>";
@@ -90,7 +134,7 @@ static void make_response(http_client_t *c, int status)
         reason = "Bad Request";
     }
 
-    if (status == 200) {
+    if (status == 200 && c->body_len == 0) {
         while (prefix[p] != '\0' && b < HTTP_BODY_LEN) {
             c->body[b++] = prefix[p++];
         }
@@ -100,20 +144,31 @@ static void make_response(http_client_t *c, int status)
         }
         memcpy(&c->body[b], "</body></html>\n", 14U);
         b = HTTP_BODY_LEN;
-    } else {
+        c->body_len = b;
+        if (ctype == NULL) {
+            ctype = "text/html";
+        }
+    } else if (status != 200) {
         const char *m = (status == 404) ? "Not found\n" :
                         (status == 405) ? "Method not allowed\n" : "Bad request\n";
+        b = 0;
         while (m[b] != '\0') {
             c->body[b] = m[b];
             b++;
         }
+        c->body_len = b;
+        if (ctype == NULL) {
+            ctype = "text/plain";
+        }
+    } else if (ctype == NULL) {
+        ctype = "application/octet-stream";
     }
 
-    c->body_len = b;
     c->header_len = 0;
     c->header_sent = 0;
     c->body_sent = 0;
     c->responding = 0;
+    c->keep_alive = keep ? 1U : 0U;
 
     status_line[0] = (char)('0' + (status / 100));
     status_line[1] = (char)('0' + ((status / 10) % 10));
@@ -123,15 +178,23 @@ static void make_response(http_client_t *c, int status)
 
     {
         uint16_t reason_len = 0;
+        uint16_t ctype_len = 0;
         while (reason[reason_len] != '\0') {
             reason_len++;
+        }
+        while (ctype[ctype_len] != '\0') {
+            ctype_len++;
         }
         if (!header_append(c, "HTTP/1.0 ", 9U) ||
             !header_append(c, status_line, 4U) ||
             !header_append(c, reason, reason_len) ||
-            !header_append(c, "\r\nContent-Type: text/html\r\nContent-Length: ", 43U) ||
+            !header_append(c, "\r\nContent-Type: ", 16U) ||
+            !header_append(c, ctype, ctype_len) ||
+            !header_append(c, "\r\nContent-Length: ", 18U) ||
             !header_append_u16(c, c->body_len) ||
-            !header_append(c, "\r\nConnection: close\r\n\r\n", 23U)) {
+            !header_append(c, keep ? "\r\nConnection: keep-alive\r\n\r\n" :
+                                     "\r\nConnection: close\r\n\r\n",
+                           keep ? 28U : 23U)) {
             klog(KLOG_ERROR, "HTTP", "Response header overflow");
             c->header_len = 0;
             c->body_len = 0;
@@ -140,6 +203,31 @@ static void make_response(http_client_t *c, int status)
     }
 
     c->responding = 1;
+}
+
+static void handle_get(http_client_t *c)
+{
+    char path[HTTP_PATH_MAX];
+    int keep = request_wants_keepalive(c->request, c->request_len);
+
+    extract_path(c->request, c->request_len, path, HTTP_PATH_MAX);
+    c->body_len = 0;
+
+    if (path[0] == '/' && path[1] == '\0') {
+        make_response(c, 200, "text/html", keep);
+        return;
+    }
+
+    if (path[0] == '/' && tfs_is_mounted() && tfs_exists(path) && !tfs_is_directory(path)) {
+        uint32_t got = 0;
+        if (tfs_read(path, c->body, HTTP_BODY_LEN, &got) && got > 0) {
+            c->body_len = (uint16_t)got;
+            make_response(c, 200, "application/octet-stream", keep);
+            return;
+        }
+    }
+
+    make_response(c, 404, "text/plain", 0);
 }
 
 void http_init(void)
@@ -190,19 +278,16 @@ void http_poll(void)
                         c->request[0] == 'G' && c->request[1] == 'E' &&
                         c->request[2] == 'T' && c->request[3] == ' ' &&
                         c->request[4] == '/') {
-                        make_response(
-                            c,
-                            (c->request_len > 5 && c->request[5] == ' ') ? 200 : 404
-                        );
+                        handle_get(c);
                     } else if (c->request_len >= 4 &&
                                c->request[0] == 'P' && c->request[1] == 'O' &&
                                c->request[2] == 'S' && c->request[3] == 'T') {
-                        make_response(c, 405);
+                        make_response(c, 405, "text/plain", 0);
                     } else {
-                        make_response(c, 400);
+                        make_response(c, 400, "text/plain", 0);
                     }
                 } else if (c->request_len == HTTP_REQUEST_MAX) {
-                    make_response(c, 400);
+                    make_response(c, 400, "text/plain", 0);
                 }
             } else if (n < 0) {
                 socket_close(c->handle);
@@ -232,10 +317,19 @@ void http_poll(void)
                     c->body_sent = (uint16_t)(c->body_sent + n);
                 }
             }
-            if (c->header_sent == c->header_len &&
-                c->body_sent == c->body_len &&
-                socket_close(c->handle) > 0) {
-                c->handle = 0;
+            if (c->header_sent == c->header_len && c->body_sent == c->body_len) {
+                if (c->keep_alive) {
+                    memset(c->request, 0, sizeof(c->request));
+                    c->request_len = 0;
+                    c->header_len = 0;
+                    c->header_sent = 0;
+                    c->body_len = 0;
+                    c->body_sent = 0;
+                    c->responding = 0;
+                    c->keep_alive = 0;
+                } else if (socket_close(c->handle) > 0) {
+                    c->handle = 0;
+                }
             }
         }
     }

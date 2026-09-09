@@ -15,6 +15,14 @@
 
 extern const uint8_t _calc_blob_start[];
 extern const uint8_t _calc_blob_end[];
+extern const uint8_t _dns_blob_start[];
+extern const uint8_t _dns_blob_end[];
+extern const uint8_t _wget_blob_start[];
+extern const uint8_t _wget_blob_end[];
+extern const uint8_t _tcp_blob_start[];
+extern const uint8_t _tcp_blob_end[];
+extern const uint8_t _udp_blob_start[];
+extern const uint8_t _udp_blob_end[];
 
 static int map_user_stack(address_space_t *as, uint64_t *stack_top_out)
 {
@@ -209,7 +217,6 @@ int seed_calc_from_blob(void)
         return -1;
     }
     if (tfs_exists("/calc")) {
-        /* Always refresh from the embedded blob so linker/loader fixes take effect. */
         if (!tfs_remove("/calc")) return -1;
     }
     if (!tfs_write("/calc", _calc_blob_start, (uint32_t)size, 1)) {
@@ -218,4 +225,36 @@ int seed_calc_from_blob(void)
     }
     console_puts("seeded /calc\n");
     return 0;
+}
+
+static int seed_blob(const char *path, const uint8_t *start, const uint8_t *end)
+{
+    uint64_t size = (uint64_t)(end - start);
+    if (!tfs_is_mounted() || start == NULL || end == NULL || size == 0) {
+        return -1;
+    }
+    if (size > FS_MAX_FILE_SIZE) {
+        console_puts("seed: blob too large\n");
+        return -1;
+    }
+    if (tfs_exists(path) && !tfs_remove(path)) {
+        return -1;
+    }
+    if (!tfs_write(path, start, (uint32_t)size, 1)) {
+        return -1;
+    }
+    console_puts("seeded ");
+    console_puts(path);
+    console_puts("\n");
+    return 0;
+}
+
+int seed_net_utils_from_blobs(void)
+{
+    int ok = 0;
+    ok |= seed_blob("/dns", _dns_blob_start, _dns_blob_end);
+    ok |= seed_blob("/wget", _wget_blob_start, _wget_blob_end);
+    ok |= seed_blob("/tcp", _tcp_blob_start, _tcp_blob_end);
+    ok |= seed_blob("/udp", _udp_blob_start, _udp_blob_end);
+    return ok;
 }

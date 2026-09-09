@@ -9,9 +9,10 @@ x86-64 operating system with UEFI boot. Runs under QEMU or from USB.
 - Interactive shell
 - Persistent TFS filesystem (512-byte sectors)
 - Block storage backends: ATA PIO (`hd0`), AHCI/SATA (`sata0`), NVMe (`nvme0`)
-- Networking: E1000e, ARP/IPv4/ICMP/UDP/TCP, HTTP on port 8080
+- Networking: E1000e, DHCP, DNS, ARP/IPv4/ICMP/UDP/TCP, HTTP server on port 8080
+- User-space socket syscalls and network utilities (`/dns`, `/wget`, `/tcp`, `/udp`)
 - xHCI controller bring-up; PS/2 keyboard remains the interactive input path
-- GitHub Actions smoke checks for ATA, AHCI, and NVMe
+- GitHub Actions smoke checks for ATA, AHCI, NVMe, HTTP, and networking
 
 ## Run
 
@@ -45,7 +46,18 @@ python dev/uefi-shell-smoke.py ata
 python dev/uefi-shell-smoke.py ahci
 python dev/uefi-shell-smoke.py nvme
 python dev/uefi-http-smoke.py
+python dev/uefi-net-smoke.py
 ```
+
+## Network shell commands
+
+After boot, DHCP configures `e1000e0` (falls back to `10.0.2.15` on QEMU user-net):
+
+```text
+ifconfig / netstat / arp / route / dhcp / dns <host> / ping <ip|host> / wget <url> <file>
+```
+
+Userland programs (seeded to TFS): `./dns`, `./wget`, `./tcp`, `./udp`.
 
 ## Layout
 

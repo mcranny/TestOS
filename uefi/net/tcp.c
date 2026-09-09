@@ -6,10 +6,11 @@
 #include "platform.h"
 #include "lib/string.h"
 
-#define TCP_CONN_MAX 8U
+#define TCP_CONN_MAX 16U
 #define TCP_WINDOW TCP_DATA_MAX
 #define TCP_RETRY_TICKS (TIMER_FREQUENCY * 2U)
 #define TCP_RETRY_MAX 3U
+#define TCP_SYN_TIMEOUT_TICKS (TIMER_FREQUENCY * 5U)
 
 #define TCP_FIN 0x01U
 #define TCP_SYN 0x02U
@@ -115,32 +116,62 @@ static int tcp_emit(tcp_conn_t *c, uint8_t flags, const uint8_t *data, uint16_t 
     uint8_t seg[TCP_HDR_MIN_LEN + TCP_DATA_MAX];
     uint16_t total = (uint16_t)(TCP_HDR_MIN_LEN + len);
     uint16_t sum;
+    uint32_t seq;
+    uint32_t advance;
+    uint32_t saved_nxt;
     if (c == NULL || len > TCP_DATA_MAX || (len != 0U && data == NULL)) return 0;
+
+    seq = c->snd_nxt;
+    advance = len;
+    if (flags & TCP_SYN) {
+        advance++;
+    }
+    if (flags & TCP_FIN) {
+        advance++;
+    }
+
     memset(seg, 0, TCP_HDR_MIN_LEN);
     put16(&seg[0], c->local_port); put16(&seg[2], c->remote_port);
-    put32(&seg[4], c->snd_nxt); put32(&seg[8], c->rcv_nxt);
+    put32(&seg[4], seq); put32(&seg[8], c->rcv_nxt);
     seg[12] = (uint8_t)(5U << 4); seg[13] = flags;
     put16(&seg[14], TCP_WINDOW); put16(&seg[16], 0);
     if (len) memcpy(&seg[TCP_HDR_MIN_LEN], data, len);
     sum = tcp_checksum(arp_get_local_ip(), c->remote_ip, seg, total);
     put16(&seg[16], sum);
+
+    /*
+     * Advance snd_nxt before transmit so loopback ACKs (same-stack) validate
+     * against the post-send sequence. Roll back if the send fails.
+     */
+    if (remember) {
+        c->unacked_flags = flags;
+        c->unacked_len = len;
+        if (len) {
+            memcpy(c->unacked_data, data, len);
+        }
+        c->last_tx_tick = timer_get_ticks();
+        c->retries = 0;
+    }
+    saved_nxt = c->snd_nxt;
+    c->snd_nxt = seq + advance;
+
 #ifdef TESTOS_TCP_TEST_HOOKS
     if (tcp_test_drop_count != 0U)
     {
         tcp_test_drop_count--;
         klog(KLOG_INFO, "TCP", "Test hook dropped segment");
+        return 1;
     }
     else
 #endif
-    if (!ipv4_send(c->remote_ip, IPV4_PROTO_TCP, seg, total)) return 0;
-    if (remember) {
-        c->unacked_flags = flags; c->unacked_len = len;
-        if (len) memcpy(c->unacked_data, data, len);
-        c->last_tx_tick = timer_get_ticks(); c->retries = 0;
+    if (!ipv4_send(c->remote_ip, IPV4_PROTO_TCP, seg, total)) {
+        c->snd_nxt = saved_nxt;
+        if (remember) {
+            c->unacked_flags = 0;
+            c->unacked_len = 0;
+        }
+        return 0;
     }
-    if (flags & TCP_SYN) c->snd_nxt++;
-    if (flags & TCP_FIN) c->snd_nxt++;
-    c->snd_nxt += len;
     return 1;
 }
 
@@ -299,7 +330,18 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
         }
         klog(KLOG_INFO, "TCP", "SYN received"); return;
     }
-    if (flags & TCP_RST) { const tcp_app_callbacks_t *cb = tcp_listener(c->local_port); if (cb && cb->closed) cb->closed(src, c->local_port, c->remote_port, 1); c->used = 0; klog(KLOG_WARN, "TCP", "Connection reset"); return; }
+    if (flags & TCP_RST) {
+        const tcp_app_callbacks_t *lcb = tcp_listener(c->local_port);
+        if (tcp_app_callbacks && tcp_app_callbacks->closed) {
+            tcp_app_callbacks->closed(src, c->local_port, c->remote_port, 1);
+        }
+        if (lcb && lcb->closed) {
+            lcb->closed(src, c->local_port, c->remote_port, 1);
+        }
+        c->used = 0;
+        klog(KLOG_WARN, "TCP", "Connection reset");
+        return;
+    }
     if ((flags & TCP_ACK) && !seq_lt(ack, c->snd_una) && seq_leq(ack, c->snd_nxt)) {
         c->snd_una = ack;
         if (c->snd_una == c->snd_nxt) { c->unacked_flags = 0; c->unacked_len = 0; c->retries = 0; }
@@ -325,14 +367,31 @@ void tcp_input(const uint8_t *p, uint16_t length, ipv4_addr_t src, ipv4_addr_t d
 #endif
             (void)tcp_send(src, src_port, dst_port, &p[hdr], data_len);
         }
-        else { const tcp_app_callbacks_t *cb = tcp_listener(c->local_port); if (cb && cb->data) cb->data(src, c->local_port, c->remote_port, &p[hdr], data_len); }
+        else {
+            /* Listeners serve passive sockets; clients use the global app callbacks. */
+            const tcp_app_callbacks_t *cb = tcp_listener(c->local_port);
+            if (cb == NULL) {
+                cb = tcp_app_callbacks;
+            }
+            if (cb && cb->data) {
+                cb->data(src, c->local_port, c->remote_port, &p[hdr], data_len);
+            }
+        }
     }
     if (flags & TCP_FIN) {
         if (seq + data_len != c->rcv_nxt) { tcp_ack(c); return; }
         c->rcv_nxt++; tcp_ack(c);
         if (c->state == TCP_ESTABLISHED) { c->state = TCP_LAST_ACK; (void)tcp_emit(c, (uint8_t)(TCP_FIN | TCP_ACK), NULL, 0, 1); }
         else if (c->state == TCP_FIN_WAIT_2) c->used = 0;
-        { const tcp_app_callbacks_t *cb = tcp_listener(c->local_port); if (cb && cb->closed) cb->closed(src, c->local_port, c->remote_port, 0); }
+        {
+            const tcp_app_callbacks_t *lcb = tcp_listener(c->local_port);
+            if (tcp_app_callbacks && tcp_app_callbacks->closed) {
+                tcp_app_callbacks->closed(src, c->local_port, c->remote_port, 0);
+            }
+            if (lcb && lcb->closed) {
+                lcb->closed(src, c->local_port, c->remote_port, 0);
+            }
+        }
     }
 }
 
@@ -341,7 +400,104 @@ void tcp_timer_tick(void)
     uint32_t i, now = timer_get_ticks();
     for (i = 0; i < TCP_CONN_MAX; i++) if (tcp_conns[i].used && tcp_conns[i].unacked_flags &&
         (uint32_t)(now - tcp_conns[i].last_tx_tick) >= TCP_RETRY_TICKS) {
-        if (tcp_conns[i].retries >= TCP_RETRY_MAX) { const tcp_app_callbacks_t *cb = tcp_listener(tcp_conns[i].local_port); if (cb && cb->closed) cb->closed(tcp_conns[i].remote_ip, tcp_conns[i].local_port, tcp_conns[i].remote_port, 1); tcp_conns[i].used = 0; klog(KLOG_WARN, "TCP", "Connection timed out"); }
-        else tcp_retransmit(&tcp_conns[i]);
+        if (tcp_conns[i].retries >= TCP_RETRY_MAX) {
+            const tcp_app_callbacks_t *lcb = tcp_listener(tcp_conns[i].local_port);
+            if (tcp_app_callbacks && tcp_app_callbacks->closed) {
+                tcp_app_callbacks->closed(
+                    tcp_conns[i].remote_ip,
+                    tcp_conns[i].local_port,
+                    tcp_conns[i].remote_port,
+                    1
+                );
+            }
+            if (lcb && lcb->closed) {
+                lcb->closed(
+                    tcp_conns[i].remote_ip,
+                    tcp_conns[i].local_port,
+                    tcp_conns[i].remote_port,
+                    1
+                );
+            }
+            tcp_conns[i].used = 0;
+            klog(KLOG_WARN, "TCP", "Connection timed out");
+        } else {
+            tcp_retransmit(&tcp_conns[i]);
+        }
     }
+    /* SYN_SENT without progress past overall timeout. */
+    for (i = 0; i < TCP_CONN_MAX; i++) {
+        if (tcp_conns[i].used && tcp_conns[i].state == TCP_SYN_SENT &&
+            (uint32_t)(now - tcp_conns[i].last_tx_tick) >= TCP_SYN_TIMEOUT_TICKS) {
+            const tcp_app_callbacks_t *lcb = tcp_listener(tcp_conns[i].local_port);
+            if (tcp_app_callbacks && tcp_app_callbacks->closed) {
+                tcp_app_callbacks->closed(
+                    tcp_conns[i].remote_ip,
+                    tcp_conns[i].local_port,
+                    tcp_conns[i].remote_port,
+                    1
+                );
+            }
+            if (lcb && lcb->closed) {
+                lcb->closed(
+                    tcp_conns[i].remote_ip,
+                    tcp_conns[i].local_port,
+                    tcp_conns[i].remote_port,
+                    1
+                );
+            }
+            tcp_conns[i].used = 0;
+            klog(KLOG_WARN, "TCP", "SYN timeout");
+        }
+    }
+}
+
+const char *tcp_state_name(int state)
+{
+    switch (state) {
+    case TCP_CLOSED: return "CLOSED";
+    case TCP_LISTEN: return "LISTEN";
+    case TCP_SYN_SENT: return "SYN_SENT";
+    case TCP_SYN_RECEIVED: return "SYN_RECV";
+    case TCP_ESTABLISHED: return "ESTABLISHED";
+    case TCP_FIN_WAIT_1: return "FIN_WAIT1";
+    case TCP_FIN_WAIT_2: return "FIN_WAIT2";
+    case TCP_LAST_ACK: return "LAST_ACK";
+    default: return "?";
+    }
+}
+
+uint32_t tcp_conn_count(void)
+{
+    uint32_t i;
+    uint32_t n = 0;
+    for (i = 0; i < TCP_CONN_MAX; i++) {
+        if (tcp_conns[i].used) {
+            n++;
+        }
+    }
+    return n;
+}
+
+int tcp_conn_get(uint32_t index, tcp_conn_info_t *out)
+{
+    uint32_t i;
+    uint32_t n = 0;
+    if (out == NULL) {
+        return 0;
+    }
+    for (i = 0; i < TCP_CONN_MAX; i++) {
+        if (!tcp_conns[i].used) {
+            continue;
+        }
+        if (n == index) {
+            out->used = 1;
+            out->state = (int)tcp_conns[i].state;
+            out->remote_ip = tcp_conns[i].remote_ip;
+            out->local_port = tcp_conns[i].local_port;
+            out->remote_port = tcp_conns[i].remote_port;
+            return 1;
+        }
+        n++;
+    }
+    return 0;
 }

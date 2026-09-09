@@ -76,8 +76,8 @@ jobs:
           text = Path("uefi/version.h").read_text(encoding="utf-8")
           if "\n" not in text:
               raise SystemExit("uefi/version.h has no newlines (corrupted header)")
-          if 'TESTOS_VERSION "0.12"' not in text:
-              raise SystemExit("uefi/version.h must define TESTOS_VERSION \"0.12\"")
+          if 'TESTOS_VERSION "0.13"' not in text:
+              raise SystemExit("uefi/version.h must define TESTOS_VERSION \"0.13\"")
           print("version.h OK")
           PY
 
@@ -205,5 +205,60 @@ jobs:
         with:
           name: uefi-http-smoke-logs
           path: |
+            build/*.log
+          if-no-files-found: ignore
+
+  uefi-net-smoke:
+    needs: uefi-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 \
+            qemu-system-x86 \
+            ovmf
+
+      - name: Download boot artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: uefi-boot-image
+          path: build
+
+      - name: Resolve OVMF firmware path
+        id: ovmf
+        run: |
+          for path in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/ovmf/OVMF_CODE.fd \
+            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd
+          do
+            if [ -f "${path}" ]; then
+              echo "code=${path}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "OVMF code firmware not found" >&2
+          exit 1
+
+      - name: Run UEFI network smoke
+        env:
+          TESTOS_OVMF_CODE: ${{ steps.ovmf.outputs.code }}
+          TESTOS_SERIAL_PORT: "5557"
+        run: python3 dev/uefi-net-smoke.py
+
+      - name: Upload net smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-net-smoke-logs
+          path: |
+            build/uefi-net-smoke.log
             build/*.log
           if-no-files-found: ignore

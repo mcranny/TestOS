@@ -90,6 +90,12 @@ PY
 fi
 
 # Boot disk on q35 AHCI; dedicated piix3 IDE master at 0x1F0 for ATA PIO + TFS.
+# USB HID interrupt IN is not wired yet; usb-kbd steals GUI keys from PS/2.
+usb_hid_args=()
+if [[ -n "${TESTOS_USB_HID:-}" ]]; then
+  usb_hid_args+=(-device usb-kbd,bus=xhci.0 -device usb-mouse,bus=xhci.0)
+fi
+
 exec "${QEMU64}" \
   -machine q35 -m 512M \
   -drive if=pflash,format=raw,readonly=on,file="${code}" \
@@ -101,5 +107,7 @@ exec "${QEMU64}" \
   -device ide-hd,drive=data,bus=ide.0 \
   -netdev user,id=net0,hostfwd=tcp::8080-:8080 \
   -device e1000e,netdev=net0 \
+  -device qemu-xhci,id=xhci \
+  "${usb_hid_args[@]}" \
   -device bochs-display -vga none \
   -serial stdio

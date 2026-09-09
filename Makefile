@@ -50,13 +50,20 @@ UEFI_C_SOURCES = \
 	uefi/mm/pmm.c \
 	uefi/mm/paging.c \
 	uefi/mm/heap.c \
+	uefi/mm/dma.c \
 	uefi/lib/string.c \
 	uefi/drivers/kbd.c \
 	uefi/drivers/console.c \
 	uefi/drivers/device.c \
 	uefi/drivers/pci.c \
 	uefi/drivers/ata.c \
+	uefi/drivers/ahci.c \
+	uefi/drivers/nvme.c \
 	uefi/block/block.c \
+	uefi/input/input.c \
+	uefi/usb/usb.c \
+	uefi/usb/xhci.c \
+	uefi/usb/hid.c \
 	uefi/fs/tfs.c \
 	uefi/fs/path.c \
 	uefi/fs/ramfs.c \

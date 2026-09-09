@@ -10,10 +10,9 @@ $ld = "C:\Program Files\LLVM\bin\ld.lld.exe"
 $cflags = @(
     "--target=x86_64-unknown-none-elf", "-m64", "-ffreestanding", "-fno-pie",
     "-fno-pic", "-fno-stack-protector", "-mno-red-zone", "-mcmodel=kernel",
-    "-nostdlib", "-nostdinc", "-Wall", "-Wextra", "-Iuefi"
+    "-nostdlib", "-nostdinc", "-Wall", "-Wextra", "-Iuefi", "-Iuefi/net"
 )
 
-# Always rebuild calc ELF so the embedded blob matches sources.
 Write-Host "Building uefi-calc.elf..."
 New-Item -ItemType Directory -Force -Path build/uefi/user | Out-Null
 $ucflags = @("--target=x86_64-unknown-none-elf","-m64","-ffreestanding","-fno-pie","-fno-pic","-fno-stack-protector","-nostdlib","-nostdinc","-Wall","-Iuefi/user")
@@ -38,13 +37,20 @@ $cSources = @(
     "uefi/mm/pmm.c",
     "uefi/mm/paging.c",
     "uefi/mm/heap.c",
+    "uefi/mm/dma.c",
     "uefi/lib/string.c",
     "uefi/drivers/kbd.c",
     "uefi/drivers/console.c",
     "uefi/drivers/device.c",
     "uefi/drivers/pci.c",
     "uefi/drivers/ata.c",
+    "uefi/drivers/ahci.c",
+    "uefi/drivers/nvme.c",
     "uefi/block/block.c",
+    "uefi/input/input.c",
+    "uefi/usb/usb.c",
+    "uefi/usb/xhci.c",
+    "uefi/usb/hid.c",
     "uefi/fs/tfs.c",
     "uefi/fs/path.c",
     "uefi/fs/ramfs.c",
@@ -52,6 +58,17 @@ $cSources = @(
     "uefi/user/syscall.c",
     "uefi/user/elf64.c",
     "uefi/user/exec.c",
+    "uefi/net/e1000.c",
+    "uefi/net/checksum.c",
+    "uefi/net/mac.c",
+    "uefi/net/ethernet.c",
+    "uefi/net/arp.c",
+    "uefi/net/ipv4.c",
+    "uefi/net/icmp.c",
+    "uefi/net/udp.c",
+    "uefi/net/tcp.c",
+    "uefi/net/socket.c",
+    "uefi/net/http.c",
     "uefi/shell/shell.c"
 )
 

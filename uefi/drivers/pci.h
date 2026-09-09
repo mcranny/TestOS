@@ -35,6 +35,9 @@ int pci_decode_bar(device_t *device, uint8_t bar_index, pci_bar_info_t *out);
 void pci_enable_bus_mastering(device_t *device);
 
 device_t *pci_find_device(uint16_t vendor_id, uint16_t device_id);
+device_t *pci_find_by_class(uint8_t class_code, uint8_t subclass, uint8_t prog_if);
+
+#define PCI_PROG_IF_ANY 0xFFU
 
 void pci_initialize(void);
 

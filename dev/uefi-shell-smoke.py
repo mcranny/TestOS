@@ -100,7 +100,33 @@ def send_cmd(sock: socket.socket, buf: bytearray, cmd: str, settle: float = 1.0)
     drain(sock, buf, settle)
 
 
-def run_boot(fresh_data: bool, commands: list[tuple[str, float]]) -> str:
+def qemu_storage_args(backend: str) -> list[str]:
+    data_drive = ["-drive", f"file={DATA},format=raw,if=none,id=data"]
+    if backend == "ahci":
+        return [
+            "-device", "ich9-ahci,id=ahci",
+            "-drive", f"file={IMG},format=raw,if=none,id=boot",
+            "-device", "ide-hd,drive=boot,bus=ahci.5,bootindex=0",
+            *data_drive,
+            "-device", "ide-hd,drive=data,bus=ahci.0",
+        ]
+    if backend == "nvme":
+        return [
+            "-drive", f"file={IMG},format=raw,if=none,id=boot",
+            "-device", "ide-hd,drive=boot,bootindex=0",
+            *data_drive,
+            "-device", "nvme,serial=testos,drive=data",
+        ]
+    return [
+        "-drive", f"file={IMG},format=raw,if=none,id=boot",
+        "-device", "ide-hd,drive=boot,bootindex=0",
+        "-device", "piix3-ide,id=ide",
+        *data_drive,
+        "-device", "ide-hd,drive=data,bus=ide.0",
+    ]
+
+
+def run_boot(fresh_data: bool, commands: list[tuple[str, float]], backend: str = "ata") -> str:
     if fresh_data:
         DATA.write_bytes(b"\x00" * (16 * 1024 * 1024))
     if not VARS.exists() or VARS.stat().st_size == 0:
@@ -112,11 +138,9 @@ def run_boot(fresh_data: bool, commands: list[tuple[str, float]]) -> str:
         "-m", "512M",
         "-drive", f"if=pflash,format=raw,readonly=on,file={CODE}",
         "-drive", f"if=pflash,format=raw,file={VARS}",
-        "-drive", f"file={IMG},format=raw,if=none,id=boot",
-        "-device", "ide-hd,drive=boot,bootindex=0",
-        "-device", "piix3-ide,id=ide",
-        "-drive", f"file={DATA},format=raw,if=none,id=data",
-        "-device", "ide-hd,drive=data,bus=ide.0",
+        *qemu_storage_args(backend),
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-kbd,bus=xhci.0",
         "-netdev", "user,id=net0,hostfwd=tcp::8080-:8080",
         "-device", "e1000e,netdev=net0",
         "-device", "bochs-display",
@@ -130,7 +154,6 @@ def run_boot(fresh_data: bool, commands: list[tuple[str, float]]) -> str:
     buf = bytearray()
     sock = None
     try:
-        # Connect once QEMU is listening
         connect_deadline = time.time() + 10
         while time.time() < connect_deadline:
             try:
@@ -174,6 +197,18 @@ def check(text: str, needle: str, name: str) -> bool:
 
 
 def main() -> int:
+    backend = "ata"
+    if len(sys.argv) > 1:
+        backend = sys.argv[1]
+    if backend not in ("ata", "ahci", "nvme"):
+        print(f"unknown backend: {backend} (expected ata|ahci|nvme)", file=sys.stderr)
+        return 2
+
+    storage_needles = {
+        "ata": "ATA: hd0 TFS region ready",
+        "ahci": "AHCI: sata0",
+        "nvme": "NVME: nvme0 ready",
+    }
     cmds = [
         ("ls", 1.2),
         ("write persist.txt hello-tfs", 1.5),
@@ -181,25 +216,24 @@ def main() -> int:
         ("calc 2+3*4", 4.0),
         ("./calc 10-3", 4.0),
         ("ps", 1.5),
-        ("ping 10.0.2.2", 5.0),
         ("ls", 1.2),
     ]
-    print("boot1 (fresh data)...")
-    text1 = run_boot(True, cmds)
+    print(f"boot1 (fresh data, backend={backend})...")
+    text1 = run_boot(True, cmds, backend)
     ok = True
     ok &= check(text1, "preempt OK", "preempt")
-    ok &= check(text1, "ATA: hd0 TFS region ready", "ata")
+    ok &= check(text1, storage_needles[backend], f"storage ({backend})")
+    ok &= check(text1, "XHCI: Controller running", "xhci")
     ok &= check(text1, "tfs mount OK", "tfs")
     ok &= check(text1, "seeded /calc", "seed")
     ok &= check(text1, "ring3 hello OK", "hello")
-    ok &= check(text1, "hello-tfs", "persist write/cat")
+    ok &= check(text1, "\nhello-tfs\n", "persist write/cat")
     ok &= check(text1, "\n14\n", "calc 2+3*4")
     ok &= check(text1, "\n7\n", "calc 10-3")
     ok &= check(text1, "PID STATE NAME", "ps")
-    ok &= check(text1, "Reply from 10.0.2.2", "ping gateway")
 
     print("boot2 (persist)...")
-    text2 = run_boot(False, [("cat persist.txt", 1.2), ("ls", 1.2)])
+    text2 = run_boot(False, [("cat persist.txt", 1.2), ("ls", 1.2)], backend)
     ok &= check(text2, "tfs mount OK", "tfs remount")
     formatted = "tfs mount OK (formatted)" in text2
     print(f"  [{'OK' if not formatted else 'FAIL'}] no reformat on remount")

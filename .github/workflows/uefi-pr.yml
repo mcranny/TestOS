@@ -8,10 +8,11 @@ on:
       - "release/**"
 
 jobs:
-  uefi-reliability:
+  uefi-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 20
+    outputs:
+      ovmf_code: ${{ steps.ovmf.outputs.code }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,16 +69,129 @@ jobs:
           echo "OVMF code firmware not found" >&2
           exit 1
 
+      - name: Verify version.h is well-formed
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("uefi/version.h").read_text(encoding="utf-8")
+          if "\n" not in text:
+              raise SystemExit("uefi/version.h has no newlines (corrupted header)")
+          if 'TESTOS_VERSION "0.12"' not in text:
+              raise SystemExit("uefi/version.h must define TESTOS_VERSION \"0.12\"")
+          print("version.h OK")
+          PY
+
       - name: Build UEFI kernel and local USB image
         run: |
           make uefi-kernel
           python3 dev/make-local-usb-image.py
 
-      - name: Run UEFI shell reliability smoke
+      - name: Upload boot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-boot-image
+          path: |
+            build/testos-uefi.elf
+            build/testos-usb-local.img
+            build/limine-bin/BOOTX64.EFI
+
+  uefi-shell-smoke:
+    needs: uefi-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [ata, ahci, nvme]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 \
+            qemu-system-x86 \
+            ovmf
+
+      - name: Download boot artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: uefi-boot-image
+          path: build
+
+      - name: Resolve OVMF firmware path
+        id: ovmf
+        run: |
+          for path in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/ovmf/OVMF_CODE.fd \
+            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd
+          do
+            if [ -f "${path}" ]; then
+              echo "code=${path}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "OVMF code firmware not found" >&2
+          exit 1
+
+      - name: Run UEFI shell reliability smoke (${{ matrix.backend }})
         env:
           TESTOS_OVMF_CODE: ${{ steps.ovmf.outputs.code }}
           TESTOS_SERIAL_PORT: "5555"
-        run: python3 dev/uefi-shell-smoke.py
+        run: python3 dev/uefi-shell-smoke.py ${{ matrix.backend }}
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-shell-smoke-${{ matrix.backend }}
+          path: |
+            build/uefi-shell-test.log
+            build/*.log
+          if-no-files-found: ignore
+
+  uefi-http-smoke:
+    needs: uefi-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 \
+            qemu-system-x86 \
+            ovmf
+
+      - name: Download boot artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: uefi-boot-image
+          path: build
+
+      - name: Resolve OVMF firmware path
+        id: ovmf
+        run: |
+          for path in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/edk2/ovmf/OVMF_CODE.fd \
+            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd
+          do
+            if [ -f "${path}" ]; then
+              echo "code=${path}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "OVMF code firmware not found" >&2
+          exit 1
 
       - name: Run UEFI HTTP interop smoke
         env:
@@ -89,8 +203,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: uefi-smoke-logs
+          name: uefi-http-smoke-logs
           path: |
-            build/uefi-shell-test.log
             build/*.log
           if-no-files-found: ignore

@@ -170,6 +170,21 @@ device_t *pci_find_device(uint16_t vendor_id, uint16_t device_id)
     return NULL;
 }
 
+device_t *pci_find_by_class(uint8_t class_code, uint8_t subclass, uint8_t prog_if)
+{
+    device_t *dev = device_get_list();
+
+    while (dev != NULL) {
+        if (dev->class_code == class_code &&
+            dev->subclass == subclass &&
+            (prog_if == PCI_PROG_IF_ANY || dev->prog_if == prog_if)) {
+            return dev;
+        }
+        dev = dev->next;
+    }
+    return NULL;
+}
+
 static void uint_to_hex_nibble(uint8_t nibble, char *out)
 {
     static const char hex_digits[] = "0123456789ABCDEF";

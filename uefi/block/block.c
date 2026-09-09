@@ -1,6 +1,6 @@
 #include "block/block.h"
 
-#define BLOCK_MAX_DEVICES 4
+#define BLOCK_MAX_DEVICES 8
 
 static block_device_t *devices[BLOCK_MAX_DEVICES];
 static uint32_t device_count;
@@ -53,6 +53,29 @@ block_device_t *block_get(const char *name)
         }
     }
     return NULL;
+}
+
+block_device_t *block_get_first(void)
+{
+    if (device_count == 0) {
+        return NULL;
+    }
+    return devices[0];
+}
+
+block_device_t *block_pick_boot(void)
+{
+    static const char *boot_names[] = {"hd0", "sata0", "nvme0", NULL};
+    uint32_t index;
+    block_device_t *device;
+
+    for (index = 0; boot_names[index] != NULL; index++) {
+        device = block_get(boot_names[index]);
+        if (device != NULL) {
+            return device;
+        }
+    }
+    return block_get_first();
 }
 
 int block_read(block_device_t *device, uint32_t lba, uint32_t count, void *buffer)

@@ -13,6 +13,8 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+__pycache__/
+*.pyc
 
 # Local toolchain (if placed inside the tree)
 /toolchain/

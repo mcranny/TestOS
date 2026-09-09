@@ -9,6 +9,10 @@
 #include "drivers/device.h"
 #include "drivers/pci.h"
 #include "drivers/ata.h"
+#include "drivers/ahci.h"
+#include "drivers/nvme.h"
+#include "usb/xhci.h"
+#include "input/input.h"
 #include "e1000.h"
 #include "ethernet.h"
 #include "arch/tss.h"
@@ -79,7 +83,9 @@ void uefi_main(void)
     console_puts("initializing storage\n");
     block_initialize();
     ata_initialize();
-    disk = block_get("hd0");
+    ahci_initialize();
+    nvme_initialize();
+    disk = block_pick_boot();
     if (disk && tfs_mount(disk)) {
         console_puts("tfs mount OK");
         if (tfs_was_formatted()) {
@@ -102,6 +108,10 @@ void uefi_main(void)
     irq_register(1, kbd_irq_handler);
     pic_unmask(0);
     pic_unmask(1);
+
+    input_initialize();
+    console_puts("initializing xhci\n");
+    xhci_initialize();
 
     console_puts("initializing e1000\n");
     e1000_initialize();

@@ -26,6 +26,8 @@ typedef struct block_device
 void block_initialize(void);
 int block_register(block_device_t *device);
 block_device_t *block_get(const char *name);
+block_device_t *block_get_first(void);
+block_device_t *block_pick_boot(void);
 int block_read(
     block_device_t *device,
     uint32_t lba,

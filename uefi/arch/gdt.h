@@ -25,6 +25,7 @@
 #define USER_CODE_SEL   (GDT_USER_CODE | 3)
 #define USER_DATA_SEL   (GDT_USER_DATA | 3)
 
-void gdt_init(void);
+void gdt_init_bsp(void);
+void gdt_load_cpu(uint32_t cpu);
 
 #endif

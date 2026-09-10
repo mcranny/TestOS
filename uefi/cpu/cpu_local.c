@@ -1,4 +1,8 @@
 #include "cpu/cpu_local.h"
+#include "arch/io.h"
+
+#define IA32_GS_BASE        0xC0000101U
+#define IA32_KERNEL_GS_BASE 0xC0000102U
 
 static cpu_local_t cpu_locals[CPU_MAX];
 static uint32_t ncpus = 1;
@@ -7,15 +11,60 @@ void cpu_local_init(void)
 {
     uint32_t i;
     for (i = 0; i < CPU_MAX; i++) {
+        cpu_locals[i].self = i;
+        cpu_locals[i].lapic_id = 0;
         cpu_locals[i].current = NULL;
+        cpu_locals[i].idle = NULL;
+        cpu_locals[i].syscall_rsp_owner = NULL;
+        cpu_locals[i].syscall_kernel_rsp = 0;
+        cpu_locals[i].syscall_user_rsp = 0;
+        cpu_locals[i].need_resched = 0;
     }
-    ncpus = 1; /* BSP only until AP bring-up */
+    ncpus = 1;
+}
+
+void cpu_local_set_count(uint32_t count)
+{
+    if (count == 0) {
+        count = 1;
+    }
+    if (count > CPU_MAX) {
+        count = CPU_MAX;
+    }
+    ncpus = count;
+}
+
+void cpu_local_set_lapic(uint32_t id, uint32_t lapic_id)
+{
+    if (id >= CPU_MAX) {
+        return;
+    }
+    cpu_locals[id].lapic_id = lapic_id;
+}
+
+void cpu_local_install_gs(uint32_t id)
+{
+    uint64_t base;
+    if (id >= CPU_MAX) {
+        return;
+    }
+    base = (uint64_t)(uintptr_t)&cpu_locals[id];
+    /*
+     * Keep both MSRs equal while in kernel so a mistaken swapgs (e.g. if CS
+     * is mis-read in the IRQ stub) is a no-op. process_enter_user zeroes
+     * GS_BASE for ring 3; SYSCALL/IRQ-from-user swapgs then still works.
+     */
+    wrmsr(IA32_GS_BASE, base);
+    wrmsr(IA32_KERNEL_GS_BASE, base);
 }
 
 uint32_t cpu_id(void)
 {
-    /* Stub: LAPIC ID / GS-based CPU index when SMP starts. */
-    return 0;
+    uint32_t id;
+    __asm__ volatile("mov %%gs:%c1, %0"
+                     : "=r"(id)
+                     : "i"(CPU_LOCAL_OFF_SELF));
+    return id;
 }
 
 uint32_t cpu_count(void)

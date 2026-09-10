@@ -20,12 +20,16 @@
 #include "arch/gdt.h"
 #include "arch/idt.h"
 #include "arch/interrupts.h"
+#include "arch/apic.h"
+#include "arch/acpi.h"
+#include "arch/ioapic.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
 #include "mm/heap.h"
 #include "block/block.h"
 #include "fs/tfs.h"
 #include "cpu/cpu_local.h"
+#include "cpu/smp.h"
 #include "task/process.h"
 #include "user/syscall.h"
 #include "user/exec.h"
@@ -56,8 +60,8 @@ void uefi_main(void)
 
     console_puts("loading gdt/idt/tss\n");
     cpu_local_init();
-    tss_init();
-    gdt_init();
+    tss_init_all();
+    gdt_init_bsp();
     idt_init();
     interrupts_init();
     console_puts("IDT loaded\n");
@@ -75,6 +79,19 @@ void uefi_main(void)
     heap_initialize();
     console_puts("heap free=");
     console_write_hex64(heap_get_free_bytes());
+    console_puts("\n");
+
+    console_puts("initializing lapic\n");
+    lapic_init();
+    if (acpi_init(boot.rsdp) == 0) {
+        console_puts("acpi madt OK\n");
+    } else {
+        console_puts("acpi madt missing\n");
+    }
+    ioapic_init();
+    smp_init(boot.smp);
+    console_puts("cpu_count=");
+    console_write_hex64(cpu_count());
     console_puts("\n");
 
     paging_user_probe();
@@ -105,12 +122,22 @@ void uefi_main(void)
     console_puts("enabling timer and keyboard\n");
     pic_remap(0x20, 0x28);
     pic_mask_all();
-    pit_init(100);
-    irq_register(0, timer_irq_handler);
     kbd_init();
     irq_register(1, kbd_irq_handler);
-    pic_unmask(0);
-    pic_unmask(1);
+
+    /* Per-CPU LAPIC timer drives the scheduler on every core. */
+    lapic_timer_init(100);
+
+    if (ioapic_present()) {
+        interrupts_set_apic_mode(1);
+        ioapic_route_isa_irq(1, 33, cpu_local_of(0)->lapic_id);
+    } else {
+        interrupts_set_apic_mode(0);
+        pic_unmask(1);
+    }
+
+    console_puts("starting APs\n");
+    smp_start_aps();
 
     input_initialize();
     console_puts("initializing xhci\n");
@@ -122,14 +149,17 @@ void uefi_main(void)
 
     console_puts("BOOT: TestOS ready\n");
     irq_enable();
+    smp_enable_scheduling();
 
     console_puts("probing network\n");
     net_bootstrap();
+    scheduler_enable_preempt();
 
     wait_ticks = timer_ticks();
     while (timer_ticks() - wait_ticks < 5) {
         __asm__ volatile("hlt");
         scheduler_yield();
+        irq_enable();
     }
     console_puts("timer ticks=");
     console_write_hex64(timer_ticks());

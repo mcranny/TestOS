@@ -48,11 +48,15 @@ UEFI_C_SOURCES = \
 	uefi/arch/idt.c \
 	uefi/arch/interrupts.c \
 	uefi/arch/smap.c \
+	uefi/arch/apic.c \
+	uefi/arch/acpi.c \
+	uefi/arch/ioapic.c \
 	uefi/mm/pmm.c \
 	uefi/mm/paging.c \
 	uefi/mm/heap.c \
 	uefi/mm/dma.c \
 	uefi/cpu/cpu_local.c \
+	uefi/cpu/smp.c \
 	uefi/lib/string.c \
 	uefi/drivers/kbd.c \
 	uefi/drivers/console.c \

@@ -14,8 +14,11 @@
 #define LIMINE_MEMMAP_REQUEST_ID      { LIMINE_COMMON_MAGIC, 0x67cf3d9d378a806fULL, 0xe304acdfc50c3c62ULL }
 
 #define LIMINE_KERNEL_ADDRESS_REQUEST_ID { LIMINE_COMMON_MAGIC, 0x71ba76863cc55f63ULL, 0xb2644a48c516a487ULL }
+#define LIMINE_SMP_REQUEST_ID            { LIMINE_COMMON_MAGIC, 0x95a67b819a1b857eULL, 0xa0b61b723b6a73e0ULL }
+#define LIMINE_RSDP_REQUEST_ID           { LIMINE_COMMON_MAGIC, 0xc5e77b6b397e7b43ULL, 0x27637845accdcf3cULL }
 
 #define LIMINE_FRAMEBUFFER_RGB 1ULL
+#define LIMINE_SMP_X2APIC (1ULL << 0)
 #define LIMINE_MEMMAP_USABLE 0ULL
 #define LIMINE_MEMMAP_RESERVED 1ULL
 #define LIMINE_MEMMAP_ACPI_RECLAIMABLE 2ULL
@@ -68,6 +71,41 @@ struct limine_kernel_address_response {
 struct limine_kernel_address_request {
     uint64_t id[4], revision;
     struct limine_kernel_address_response *response;
+};
+
+struct limine_smp_info;
+typedef void (*limine_goto_address)(struct limine_smp_info *);
+
+struct limine_smp_info {
+    uint32_t processor_id;
+    uint32_t lapic_id;
+    uint64_t reserved;
+    limine_goto_address goto_address;
+    uint64_t extra_argument;
+};
+
+struct limine_smp_response {
+    uint64_t revision;
+    uint32_t flags;
+    uint32_t bsp_lapic_id;
+    uint64_t cpu_count;
+    struct limine_smp_info **cpus;
+};
+
+struct limine_smp_request {
+    uint64_t id[4], revision;
+    struct limine_smp_response *response;
+    uint64_t flags;
+};
+
+struct limine_rsdp_response {
+    uint64_t revision;
+    void *address;
+};
+
+struct limine_rsdp_request {
+    uint64_t id[4], revision;
+    struct limine_rsdp_response *response;
 };
 
 #endif

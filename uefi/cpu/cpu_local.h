@@ -2,36 +2,42 @@
 #define TESTOS_UEFI_CPU_CPU_LOCAL_H
 
 #include "types.h"
+#include "cpu/cpu_local_offsets.h"
 
 struct process;
-
-/*
- * Per-CPU state boundary (SMP prep).
- *
- * Only CPU0 is live today (cpu_id() always returns 0). Accessors exist so
- * scheduler / syscall / TSS paths stop treating a bare file-static `current`
- * as the global source of truth. When APs come online, cpu_id() will map to
- * an APIC/CPU index and each slot gets its own current, TSS/RSP0 mirror, etc.
- *
- * Not yet moved here (still global / documented in _tmp/SMP.md):
- *   - syscall live RSP slots (current_syscall_* in syscall_entry.S)
- *   - TSS / GDT (one per CPU later)
- *   - ready queue (needs a lock or per-CPU runqueues)
- */
 
 #define CPU_MAX 8
 
 typedef struct cpu_local {
+    uint32_t self;
+    uint32_t lapic_id;
     struct process *current;
+    struct process *idle;
+    struct process *syscall_rsp_owner;
+    uint64_t syscall_kernel_rsp;
+    uint64_t syscall_user_rsp;
+    volatile int need_resched;
 } cpu_local_t;
 
+_Static_assert(sizeof(cpu_local_t) >= 52, "cpu_local_t layout");
+_Static_assert(__builtin_offsetof(cpu_local_t, self) == CPU_LOCAL_OFF_SELF, "self offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, lapic_id) == CPU_LOCAL_OFF_LAPIC_ID, "lapic offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, current) == CPU_LOCAL_OFF_CURRENT, "current offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, idle) == CPU_LOCAL_OFF_IDLE, "idle offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, syscall_rsp_owner) == CPU_LOCAL_OFF_SYSCALL_OWNER, "owner offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, syscall_kernel_rsp) == CPU_LOCAL_OFF_SYSCALL_KERN_RSP, "kern rsp offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, syscall_user_rsp) == CPU_LOCAL_OFF_SYSCALL_USER_RSP, "user rsp offset");
+_Static_assert(__builtin_offsetof(cpu_local_t, need_resched) == CPU_LOCAL_OFF_NEED_RESCHED, "need_resched offset");
+
 void cpu_local_init(void);
+void cpu_local_set_count(uint32_t count);
+void cpu_local_set_lapic(uint32_t id, uint32_t lapic_id);
+void cpu_local_install_gs(uint32_t id);
 uint32_t cpu_id(void);
 uint32_t cpu_count(void);
 cpu_local_t *cpu_local_this(void);
 cpu_local_t *cpu_local_of(uint32_t id);
 
-/* Preferred current-process accessors (per-CPU-ready). */
 struct process *cpu_current(void);
 void cpu_set_current(struct process *p);
 

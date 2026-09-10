@@ -3,18 +3,16 @@
 .extern syscall_dispatch
 .type syscall_entry, @function
 
+#include "cpu/cpu_local_offsets.h"
+
 /*
- * Syscall entry (no swapgs — single-CPU hobby kernel).
- * On entry: rax=nr, rdi/rsi/rdx=args, rcx=user RIP, r11=user RFLAGS, rsp=user RSP.
- *
- * current_syscall_user_rsp is a per-CPU live slot for the in-flight user RSP.
- * set_kernel_stacks() spills/reloads it from process_t.syscall_user_rsp on
- * every switch so concurrent syscalls cannot clobber each other (H7).
- * current_syscall_kernel_rsp is likewise refreshed per switch.
+ * Syscall entry with swapgs. GS_BASE becomes cpu_local for the duration.
+ * Offsets must match cpu_local_t.
  */
 syscall_entry:
-    mov %rsp, current_syscall_user_rsp(%rip)
-    mov current_syscall_kernel_rsp(%rip), %rsp
+    swapgs
+    mov %rsp, %gs:CPU_LOCAL_OFF_SYSCALL_USER_RSP
+    mov %gs:CPU_LOCAL_OFF_SYSCALL_KERN_RSP, %rsp
 
     push %r11
     push %rcx
@@ -36,9 +34,6 @@ syscall_entry:
     mov %ax, %ds
     mov %ax, %es
 
-    /* Stack after 15 pushes:
-     * +0 r15 ... +12*8 = rax(nr), +11*8=rdi, +10*8=rsi, +9*8=rdx
-     */
     mov (12 * 8)(%rsp), %rdi
     mov (11 * 8)(%rsp), %rsi
     mov (10 * 8)(%rsp), %rdx
@@ -66,15 +61,6 @@ syscall_entry:
     pop %rcx
     pop %r11
 
-    mov current_syscall_user_rsp(%rip), %rsp
+    mov %gs:CPU_LOCAL_OFF_SYSCALL_USER_RSP, %rsp
+    swapgs
     sysretq
-
-.section .bss
-.global current_syscall_kernel_rsp
-.global current_syscall_user_rsp
-.align 8
-current_syscall_kernel_rsp:
-    .quad 0
-/* Per-CPU live slot; durable copy lives in process_t.syscall_user_rsp (H7). */
-current_syscall_user_rsp:
-    .quad 0

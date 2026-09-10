@@ -95,6 +95,7 @@ fi
 
 exec "${QEMU64}" \
   -machine q35 -m 512M \
+  -smp ${TESTOS_SMP:-4} \
   -drive if=pflash,format=raw,readonly=on,file="${code}" \
   -drive if=pflash,format=raw,file="${vars}" \
   -drive file="${image}",format=raw,if=none,id=boot \

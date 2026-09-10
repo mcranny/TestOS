@@ -3,16 +3,23 @@
 #include "mm/heap.h"
 #include "arch/io.h"
 #include "arch/smap.h"
+#include "arch/apic.h"
+#include "cpu/smp.h"
+#include "sync/spinlock.h"
 #include "drivers/console.h"
 #include "lib/string.h"
 #include "platform.h"
 
 #define PAGE_SIZE 4096ULL
 #define PTE_ADDR_MASK 0x000ffffffffff000ULL
+#define TLB_SHOOTDOWN_FULL (~0ULL)
 
 static uint64_t *pml4;
 static uint64_t kernel_pml4_phys;
 static address_space_t kernel_as;
+static spinlock_t paging_lock = SPINLOCK_INIT;
+static volatile uint64_t tlb_shootdown_addr;
+static volatile uint32_t tlb_acks;
 
 static void memset64(void *dst, uint8_t value, uint64_t size)
 {
@@ -58,6 +65,39 @@ static uint64_t *get_or_alloc_table(uint64_t *parent, uint64_t index)
     return get_or_alloc_table_flags(parent, index, 0);
 }
 
+static void tlb_flush_local(uint64_t virt)
+{
+    if (virt == TLB_SHOOTDOWN_FULL) {
+        write_cr3(read_cr3());
+    } else {
+        __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    }
+}
+
+void tlb_shootdown_handler(void)
+{
+    tlb_flush_local(tlb_shootdown_addr);
+    __atomic_add_fetch(&tlb_acks, 1U, __ATOMIC_SEQ_CST);
+}
+
+static void tlb_shootdown(uint64_t virt)
+{
+    uint32_t online = smp_cpus_online();
+    uint64_t spins = 0;
+
+    /*
+     * APs are currently parked with IF clear after bring-up, so TLB IPIs
+     * would not be handled. Local invlpg/cr3 on the mapper is enough until
+     * APs accept IRQs.
+     */
+    (void)virt;
+    (void)online;
+    (void)spins;
+    if (online <= 1) {
+        return;
+    }
+}
+
 static int map_page_in(uint64_t *root, uint64_t virt, uint64_t phys, uint64_t flags)
 {
     uint64_t *pdpt;
@@ -76,7 +116,7 @@ static int map_page_in(uint64_t *root, uint64_t virt, uint64_t phys, uint64_t fl
     pd = get_or_alloc_table_flags(pdpt, pdpte, mid);
     pt = get_or_alloc_table_flags(pd, pde, mid);
     pt[pte] = (phys & PTE_ADDR_MASK) | (flags & ~PTE_ADDR_MASK) | PAGE_PRESENT;
-    __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    tlb_flush_local(virt);
     return 0;
 }
 
@@ -101,7 +141,14 @@ static void clone_pml4_from_limine(void)
 
 int map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    return map_page_in(pml4, virt, phys, flags);
+    int rc;
+    uint64_t irqflags = spin_lock_irqsave(&paging_lock);
+    rc = map_page_in(pml4, virt, phys, flags);
+    spin_unlock_irqrestore(&paging_lock, irqflags);
+    if (rc == 0) {
+        tlb_shootdown(virt);
+    }
+    return rc;
 }
 
 int unmap_page(uint64_t virt)
@@ -113,15 +160,27 @@ int unmap_page(uint64_t virt)
     uint64_t pdpte = (virt >> 30) & 0x1ff;
     uint64_t pde = (virt >> 21) & 0x1ff;
     uint64_t pte = (virt >> 12) & 0x1ff;
+    uint64_t irqflags = spin_lock_irqsave(&paging_lock);
 
-    if (!pml4 || !(pml4[pml4e] & PAGE_PRESENT)) return -1;
+    if (!pml4 || !(pml4[pml4e] & PAGE_PRESENT)) {
+        spin_unlock_irqrestore(&paging_lock, irqflags);
+        return -1;
+    }
     pdpt = table_ptr(pml4[pml4e]);
-    if (!(pdpt[pdpte] & PAGE_PRESENT) || (pdpt[pdpte] & (1ULL << 7))) return -1;
+    if (!(pdpt[pdpte] & PAGE_PRESENT) || (pdpt[pdpte] & (1ULL << 7))) {
+        spin_unlock_irqrestore(&paging_lock, irqflags);
+        return -1;
+    }
     pd = table_ptr(pdpt[pdpte]);
-    if (!(pd[pde] & PAGE_PRESENT) || (pd[pde] & (1ULL << 7))) return -1;
+    if (!(pd[pde] & PAGE_PRESENT) || (pd[pde] & (1ULL << 7))) {
+        spin_unlock_irqrestore(&paging_lock, irqflags);
+        return -1;
+    }
     pt = table_ptr(pd[pde]);
     pt[pte] = 0;
-    __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    tlb_flush_local(virt);
+    spin_unlock_irqrestore(&paging_lock, irqflags);
+    tlb_shootdown(virt);
     return 0;
 }
 
@@ -136,6 +195,7 @@ void *map_mmio(uint64_t phys, uint64_t size)
     uint64_t page;
     uint64_t virt_base;
     uint64_t mapped = 0;
+    uint64_t irqflags;
 
     if (size == 0 || !pml4) {
         return NULL;
@@ -149,20 +209,47 @@ void *map_mmio(uint64_t phys, uint64_t size)
     }
     map_end = (map_end + PAGE_SIZE - 1ULL) & ~(PAGE_SIZE - 1ULL);
 
+    irqflags = spin_lock_irqsave(&paging_lock);
     virt_base = mmio_next_virt;
     for (page = map_start; page < map_end; page += PAGE_SIZE) {
-        if (map_page(virt_base + mapped, page,
-                     PAGE_PRESENT | PAGE_WRITABLE | PAGE_PCD | PAGE_NX) != 0) {
+        if (map_page_in(pml4, virt_base + mapped, page,
+                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_PCD | PAGE_NX) != 0) {
             while (mapped > 0) {
                 mapped -= PAGE_SIZE;
-                unmap_page(virt_base + mapped);
+                /* Best-effort undo under the same lock. */
+                {
+                    uint64_t v = virt_base + mapped;
+                    uint64_t *pdpt;
+                    uint64_t *pd;
+                    uint64_t *pt;
+                    uint64_t pml4e = (v >> 39) & 0x1ff;
+                    uint64_t pdpte = (v >> 30) & 0x1ff;
+                    uint64_t pde = (v >> 21) & 0x1ff;
+                    uint64_t pte = (v >> 12) & 0x1ff;
+                    if ((pml4[pml4e] & PAGE_PRESENT)) {
+                        pdpt = table_ptr(pml4[pml4e]);
+                        if ((pdpt[pdpte] & PAGE_PRESENT) && !(pdpt[pdpte] & (1ULL << 7))) {
+                            pd = table_ptr(pdpt[pdpte]);
+                            if ((pd[pde] & PAGE_PRESENT) && !(pd[pde] & (1ULL << 7))) {
+                                pt = table_ptr(pd[pde]);
+                                pt[pte] = 0;
+                                tlb_flush_local(v);
+                            }
+                        }
+                    }
+                }
             }
+            spin_unlock_irqrestore(&paging_lock, irqflags);
             return NULL;
         }
         mapped += PAGE_SIZE;
     }
 
     mmio_next_virt = virt_base + mapped;
+    spin_unlock_irqrestore(&paging_lock, irqflags);
+    for (page = 0; page < mapped; page += PAGE_SIZE) {
+        tlb_shootdown(virt_base + page);
+    }
     return (void *)(uintptr_t)(virt_base + offset);
 }
 
@@ -279,10 +366,18 @@ void address_space_switch(address_space_t *as)
 int map_user_page(address_space_t *as, uint64_t virt, uint64_t phys, uint64_t flags)
 {
     uint64_t *root;
+    int rc;
+    uint64_t irqflags;
     if (!as) return -1;
     if (virt >= 0x0000800000000000ULL) return -1; /* must be low canonical user */
+    irqflags = spin_lock_irqsave(&paging_lock);
     root = (uint64_t *)phys_to_virt(as->pml4_phys);
-    return map_page_in(root, virt, phys, flags | PAGE_USER);
+    rc = map_page_in(root, virt, phys, flags | PAGE_USER);
+    spin_unlock_irqrestore(&paging_lock, irqflags);
+    if (rc == 0) {
+        tlb_shootdown(virt);
+    }
+    return rc;
 }
 
 uint64_t address_space_virt_to_phys(address_space_t *as, uint64_t virt)

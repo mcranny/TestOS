@@ -2,6 +2,7 @@
 #define TESTOS_UEFI_ARCH_TSS_H
 
 #include "types.h"
+#include "cpu/cpu_local.h"
 
 struct tss64 {
     uint32_t reserved0;
@@ -21,7 +22,8 @@ struct tss64 {
     uint16_t iopb;
 } __attribute__((packed));
 
-void tss_init(void);
+void tss_init_all(void);
+struct tss64 *tss_get_for(uint32_t cpu);
 struct tss64 *tss_get(void);
 void tss_set_kernel_stack(uint64_t rsp0);
 

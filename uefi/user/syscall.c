@@ -3,6 +3,7 @@
 #include "arch/gdt.h"
 #include "arch/io.h"
 #include "arch/smap.h"
+#include "cpu/cpu_local.h"
 #include "drivers/console.h"
 #include "mm/paging.h"
 #include "platform.h"
@@ -13,28 +14,13 @@
 #include "fs/tfs.h"
 #include "fs/fs.h"
 
-extern uint64_t current_syscall_kernel_rsp;
 extern void syscall_entry(void);
 
 static uint16_t ephemeral_port = 41000U;
 
-static void wrmsr(uint32_t msr, uint64_t value)
-{
-    uint32_t lo = (uint32_t)value;
-    uint32_t hi = (uint32_t)(value >> 32);
-    __asm__ volatile("wrmsr" : : "c"(msr), "a"(lo), "d"(hi) : "memory");
-}
-
-static uint64_t rdmsr(uint32_t msr)
-{
-    uint32_t lo, hi;
-    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
-    return ((uint64_t)hi << 32) | lo;
-}
-
 void syscall_set_kernel_rsp(uint64_t rsp)
 {
-    current_syscall_kernel_rsp = rsp;
+    cpu_local_this()->syscall_kernel_rsp = rsp;
 }
 
 static int copy_user_string(process_t *p, const char *ubuf, char *kbuf, uint64_t cap)

@@ -43,3 +43,8 @@ void idt_init(void)
     idtr.base = (uint64_t)(uintptr_t)idt;
     __asm__ volatile("lidt %0" : : "m"(idtr) : "memory");
 }
+
+void idt_reload(void)
+{
+    __asm__ volatile("lidt %0" : : "m"(idtr) : "memory");
+}

@@ -10,6 +10,8 @@ struct boot_info {
     uint64_t kernel_size;
     struct limine_memmap_response *memmap;
     struct limine_framebuffer *framebuffer;
+    struct limine_smp_response *smp;
+    void *rsdp;
 };
 
 /* Validate Limine responses and fill boot_info. Returns 0 on success. */

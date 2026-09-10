@@ -137,6 +137,7 @@ def run_boot(fresh_data: bool, commands: list[tuple[str, float]], backend: str =
     args = [
         str(QEMU),
         "-machine", "q35",
+        "-smp", os.environ.get("TESTOS_SMP", "4"),
         "-m", "512M",
         "-drive", f"if=pflash,format=raw,readonly=on,file={CODE}",
         "-drive", f"if=pflash,format=raw,file={VARS}",

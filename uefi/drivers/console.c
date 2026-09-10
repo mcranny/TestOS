@@ -4,8 +4,11 @@
 #include "drivers/kbd.h"
 #include "input/input.h"
 #include "usb/xhci.h"
+#include "sync/spinlock.h"
 #include "platform.h"
 #include "ethernet.h"
+
+static spinlock_t console_lock = SPINLOCK_INIT;
 
 void console_init(void)
 {
@@ -23,19 +26,24 @@ void console_putc(char c)
 
 void console_puts(const char *text)
 {
+    uint64_t flags = spin_lock_irqsave(&console_lock);
     while (*text) {
         console_putc(*text++);
     }
+    spin_unlock_irqrestore(&console_lock, flags);
 }
 
 void console_write_hex64(uint64_t value)
 {
     static const char digits[] = "0123456789abcdef";
     int shift;
-    console_puts("0x");
+    uint64_t flags = spin_lock_irqsave(&console_lock);
+    console_putc('0');
+    console_putc('x');
     for (shift = 60; shift >= 0; shift -= 4) {
         console_putc(digits[(value >> shift) & 0xfU]);
     }
+    spin_unlock_irqrestore(&console_lock, flags);
 }
 
 char console_getchar(void)

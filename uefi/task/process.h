@@ -41,9 +41,13 @@ typedef struct process {
 typedef void (*process_entry_t)(void);
 
 void scheduler_init(void);
+void scheduler_ap_online(uint32_t cpu);
+void scheduler_ap_idle(void) __attribute__((noreturn));
 void scheduler_tick(void);
 void scheduler_yield(void);
 void scheduler_on_irq_exit(void);
+void scheduler_enable_preempt(void);
+void scheduler_kick_others(void);
 /* Thin wrappers over cpu_current() — preferred public API for most callers. */
 process_t *process_get_current(void);
 uint32_t process_get_current_pid(void);

@@ -3,6 +3,9 @@
 #include "drivers/fb.h"
 #include "drivers/device.h"
 #include "arch/io.h"
+#include "arch/apic.h"
+#include "cpu/cpu_local.h"
+#include "cpu/smp.h"
 #include "fs/tfs.h"
 #include "fs/fs.h"
 #include "fs/path.h"
@@ -119,6 +122,7 @@ static void shell_help(void)
     console_puts("  echo     - print text\n");
     console_puts("  mem      - show memory information\n");
     console_puts("  heap     - show heap free bytes\n");
+    console_puts("  cpu      - show SMP / per-CPU status\n");
     console_puts("  pci      - list PCI devices\n");
     console_puts("  ls       - list directory\n");
     console_puts("  cd       - change directory\n");
@@ -186,6 +190,72 @@ static void shell_heap(void)
     console_puts(" used=");
     console_write_hex64(heap_get_used_bytes());
     console_puts("\n");
+}
+
+static void shell_cpu(void)
+{
+    uint32_t i;
+    uint32_t configured = cpu_count();
+    uint32_t online = smp_cpus_online();
+    uint32_t self = cpu_id();
+    process_t *cur = process_get_current();
+
+    console_puts("CPUs: configured=");
+    print_u32(configured);
+    console_puts(" online=");
+    print_u32(online);
+    console_puts(" this=");
+    print_u32(self);
+    console_puts(" lapic=");
+    print_u32(lapic_id());
+    console_puts("\n");
+
+    console_puts("scheduling=");
+    console_puts(smp_scheduling_enabled() ? "enabled" : "disabled");
+    console_puts("\n");
+
+    console_puts("current process: ");
+    if (cur) {
+        print_u32(cur->pid);
+        console_puts(" ");
+        console_puts(cur->name);
+    } else {
+        console_puts("(none)");
+    }
+    console_puts("\n");
+
+    console_puts("CPU LAPIC ROLE   CURRENT\n");
+    for (i = 0; i < configured && i < CPU_MAX; i++) {
+        cpu_local_t *cl = cpu_local_of(i);
+        process_t *p;
+
+        print_u32(i);
+        console_puts("   ");
+        print_u32(cl ? cl->lapic_id : 0);
+        console_puts("   ");
+        if (i == 0) {
+            console_puts("BSP    ");
+        } else if (i < online) {
+            /* APs bring up, then park with IF clear (not running work yet). */
+            console_puts("parked ");
+        } else {
+            console_puts("down   ");
+        }
+
+        p = cl ? cl->current : NULL;
+        if (p) {
+            print_u32(p->pid);
+            console_puts(" ");
+            console_puts(p->name);
+        } else if (i == 0 && cur) {
+            print_u32(cur->pid);
+            console_puts(" ");
+            console_puts(cur->name);
+        } else {
+            console_puts("-");
+        }
+        console_puts("\n");
+    }
 }
 
 static void shell_pci(void)
@@ -1249,6 +1319,7 @@ static void run_line(char *line)
     if (command_is(line, "echo")) { shell_echo(line + 4); return; }
     if (command_is(line, "mem")) { shell_mem(); return; }
     if (command_is(line, "heap")) { shell_heap(); return; }
+    if (command_is(line, "cpu")) { shell_cpu(); return; }
     if (command_is(line, "pci")) { shell_pci(); return; }
     if (command_is(line, "ls")) { shell_ls(line + 2); return; }
     if (command_is(line, "cd")) { shell_cd(line + 2); return; }

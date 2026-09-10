@@ -17,6 +17,7 @@ int map_page(uint64_t virt, uint64_t phys, uint64_t flags);
 int unmap_page(uint64_t virt);
 void *map_mmio(uint64_t phys, uint64_t size);
 void paging_probe(void);
+void tlb_shootdown_handler(void);
 
 address_space_t *address_space_kernel(void);
 address_space_t *address_space_create(void);

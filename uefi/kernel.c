@@ -125,7 +125,15 @@ void uefi_main(void)
     kbd_init();
     irq_register(1, kbd_irq_handler);
 
-    /* Per-CPU LAPIC timer drives the scheduler on every core. */
+    /*
+     * Park APs before LAPIC calibration. Limine APs busy-spin until
+     * goto_address is set; under TCG that steals host time from the BSP
+     * and inflates the busy-wait calibration into a near-stuck tick.
+     */
+    console_puts("starting APs\n");
+    smp_start_aps();
+
+    /* BSP LAPIC timer drives the scheduler (APs keep theirs masked). */
     lapic_timer_init(100);
 
     if (ioapic_present()) {
@@ -135,9 +143,6 @@ void uefi_main(void)
         interrupts_set_apic_mode(0);
         pic_unmask(1);
     }
-
-    console_puts("starting APs\n");
-    smp_start_aps();
 
     input_initialize();
     console_puts("initializing xhci\n");

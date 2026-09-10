@@ -150,13 +150,15 @@ static void lapic_timer_program(uint32_t hz)
 void lapic_timer_init(uint32_t hz)
 {
     /*
-     * Rough calibration against a short busy-wait. QEMU's LAPIC timer is
-     * fast enough that a fixed count works; refine when PIT is still alive.
+     * Calibrate against a short busy-wait. Use 64-bit math and clamps so
+     * TCG/SMP host skew cannot overflow to a tiny reload (IRQ storm) or an
+     * enormous period that stalls the boot tick wait.
      */
-    uint32_t start;
     uint32_t end;
-    uint32_t ticks;
+    uint64_t ticks;
+    uint64_t count;
     uint32_t i;
+    uint32_t rate = hz ? hz : 100U;
 
     if (!lapic_mmio) {
         return;
@@ -166,23 +168,26 @@ void lapic_timer_init(uint32_t hz)
     lapic_write(LAPIC_LVT_TIMER, (1U << 16) | LAPIC_TIMER_VECTOR);
     lapic_write(LAPIC_TIMER_INIT, 0xffffffffU);
 
-    /* Busy-wait ~10ms worth of iterations (architecture-dependent). */
+    /* Busy-wait ~10ms worth of iterations when the BSP alone is runnable. */
     for (i = 0; i < 2000000U; i++) {
         __asm__ volatile("pause");
     }
 
-    start = 0xffffffffU;
     end = lapic_read(LAPIC_TIMER_CUR);
-    ticks = start - end;
-    if (ticks < 1000U) {
-        ticks = 1000000U;
+    ticks = (uint64_t)0xffffffffU - (uint64_t)end;
+    if (ticks < 1000ULL) {
+        ticks = 1000000ULL;
     }
-    /* Approximate: the busy loop ~10ms → counts per second = ticks * 100 */
-    timer_initial_count = (ticks * 100U) / (hz ? hz : 100U);
-    if (timer_initial_count < 1000U) {
-        timer_initial_count = 1000U;
+    /* Approximate: the busy loop ~10ms → counts per interrupt = ticks * 100 / hz */
+    count = (ticks * 100ULL) / (uint64_t)rate;
+    if (count < 1000ULL) {
+        count = 1000ULL;
     }
-    lapic_timer_program(hz);
+    if (count > 0x0fffffffULL) {
+        count = 0x0fffffffULL;
+    }
+    timer_initial_count = (uint32_t)count;
+    lapic_timer_program(rate);
 }
 
 void lapic_timer_ap_init(uint32_t hz)

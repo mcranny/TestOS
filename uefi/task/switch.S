@@ -39,17 +39,18 @@ process_switch:
 /* void process_enter_user(uint64_t entry, uint64_t user_stack)
  * rdi = entry, rsi = user_stack
  *
- * Kernel has GS_BASE == KERNEL_GS_BASE == cpu_local. Zero GS_BASE for ring 3
- * so SYSCALL/IRQ-from-user can swapgs to the cpu_local still in KERNEL_GS_BASE.
- * Keep IF clear until iretq: a timer IRQ with GS_BASE==0 and kernel CS would
- * skip swapgs and fault on %%gs cpu_local access.
+ * cpu_local_prepare_user ensures KERNEL_GS_BASE holds cpu_local even if a
+ * prior IRQ-from-user swapgs + context switch left it zero, then clears
+ * GS_BASE for ring 3. Keep IF clear until iretq.
  */
+.extern cpu_local_prepare_user
 process_enter_user:
     cli
-    mov $0xC0000101, %ecx       /* IA32_GS_BASE */
-    xor %eax, %eax
-    xor %edx, %edx
-    wrmsr
+    push %rdi
+    push %rsi
+    call cpu_local_prepare_user
+    pop %rsi
+    pop %rdi
 
     mov $0x1B, %ax              /* USER_DATA_SEL */
     mov %ax, %ds

@@ -175,7 +175,12 @@ void lapic_timer_init(uint32_t hz)
 
     end = lapic_read(LAPIC_TIMER_CUR);
     ticks = (uint64_t)0xffffffffU - (uint64_t)end;
-    if (ticks < 1000ULL) {
+    /*
+     * Busy loop is meant to be ~10ms. Under TCG it can run for far more LAPIC
+     * counts (host scheduling), which would make 100Hz reload enormous and
+     * stall DHCP / boot tick waits. Fall back when the sample is absurd.
+     */
+    if (ticks < 1000ULL || ticks > 20000000ULL) {
         ticks = 1000000ULL;
     }
     /* Approximate: the busy loop ~10ms → counts per interrupt = ticks * 100 / hz */
@@ -183,8 +188,8 @@ void lapic_timer_init(uint32_t hz)
     if (count < 1000ULL) {
         count = 1000ULL;
     }
-    if (count > 0x0fffffffULL) {
-        count = 0x0fffffffULL;
+    if (count > 20000000ULL) {
+        count = 20000000ULL;
     }
     timer_initial_count = (uint32_t)count;
     lapic_timer_program(rate);

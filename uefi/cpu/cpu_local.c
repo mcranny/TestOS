@@ -58,6 +58,20 @@ void cpu_local_install_gs(uint32_t id)
     wrmsr(IA32_KERNEL_GS_BASE, base);
 }
 
+void cpu_local_prepare_user(void)
+{
+    uint32_t id = cpu_id();
+    uint64_t base = (uint64_t)(uintptr_t)&cpu_locals[id];
+    /*
+     * IRQ-from-user does swapgs (GS=cpu_local, KERNEL_GS=0). A context switch
+     * can leave that asymmetric state. Zeroing only GS_BASE would then clear
+     * both MSRs and the next user IRQ/syscall faults at %%gs:0x28.
+     * Reinstall KERNEL_GS first, then clear GS for ring 3.
+     */
+    wrmsr(IA32_KERNEL_GS_BASE, base);
+    wrmsr(IA32_GS_BASE, 0);
+}
+
 uint32_t cpu_id(void)
 {
     uint32_t id;

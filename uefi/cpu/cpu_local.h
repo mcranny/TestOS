@@ -33,6 +33,7 @@ void cpu_local_init(void);
 void cpu_local_set_count(uint32_t count);
 void cpu_local_set_lapic(uint32_t id, uint32_t lapic_id);
 void cpu_local_install_gs(uint32_t id);
+void cpu_local_prepare_user(void);
 uint32_t cpu_id(void);
 uint32_t cpu_count(void);
 cpu_local_t *cpu_local_this(void);

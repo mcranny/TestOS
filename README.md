@@ -12,6 +12,7 @@ x86-64 operating system with UEFI boot. Runs under QEMU or from USB.
 - Networking: E1000e, DHCP, DNS, ARP/IPv4/ICMP/UDP/TCP, HTTP server on port 8080
 - User-space socket syscalls and network utilities (`/dns`, `/wget`, `/tcp`, `/udp`)
 - xHCI controller bring-up; PS/2 keyboard remains the interactive input path
+- SMP bring-up via Limine: LAPIC/IOAPIC, per-CPU GDT/TSS/GS; APs come online then park (BSP still runs work); `cpu` shell command; QEMU `-smp`
 - GitHub Actions smoke checks for ATA/AHCI/NVMe (+ `fsck`), HTTP, and UEFI networking (DHCP/ifconfig, wget size, TCP echo+PCAP)
 
 ## Run
@@ -48,6 +49,7 @@ python dev/uefi-shell-smoke.py nvme
 python dev/uefi-http-smoke.py
 python dev/uefi-net-smoke.py
 python dev/check-storage-dma-cap.py
+python dev/smp-smoke.py
 ```
 
 CI (`.github/workflows/uefi-pr.yml`) runs the UEFI smokes above. Legacy i386 wrappers

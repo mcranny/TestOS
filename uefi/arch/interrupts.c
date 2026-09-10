@@ -1,7 +1,12 @@
 #include "arch/interrupts.h"
 #include "arch/idt.h"
 #include "arch/io.h"
+#include "arch/apic.h"
+#include "arch/ioapic.h"
 #include "drivers/pic.h"
+#include "cpu/cpu_local.h"
+#include "cpu/smp.h"
+#include "mm/paging.h"
 #include "task/process.h"
 #include "platform.h"
 
@@ -17,8 +22,12 @@ extern void isr32(void); extern void isr33(void); extern void isr34(void); exter
 extern void isr36(void); extern void isr37(void); extern void isr38(void); extern void isr39(void);
 extern void isr40(void); extern void isr41(void); extern void isr42(void); extern void isr43(void);
 extern void isr44(void); extern void isr45(void); extern void isr46(void); extern void isr47(void);
+extern void isr48(void);
+extern void isr240(void);
+extern void isr241(void);
 
 static void (*irq_handlers[16])(void *);
+static int use_apic_eoi;
 
 static const char *exception_name(uint64_t vector)
 {
@@ -33,6 +42,11 @@ static const char *exception_name(uint64_t vector)
     return "EXC";
 }
 
+void interrupts_set_apic_mode(int enabled)
+{
+    use_apic_eoi = enabled ? 1 : 0;
+}
+
 void isr_dispatch(struct interrupt_frame *frame)
 {
     if (frame->vector < 32) {
@@ -42,17 +56,40 @@ void isr_dispatch(struct interrupt_frame *frame)
         if (frame->vector == 14) {
             log_hex64("CR2=", read_cr2());
         }
-        /* Ring-3 faults kill the process; kernel faults still panic. */
         if ((frame->cs & 3) == 3) {
             process_t *p = process_get_current();
             if (p && !p->protected) {
                 log_warn("terminating user process after exception");
                 log_hex64("PID=", p->pid);
-                /* Never returns — same path as SYS_EXIT / process_terminate. */
                 process_exit(139);
             }
         }
         panic("CPU exception");
+    }
+
+    if (frame->vector == LAPIC_TIMER_VECTOR) {
+        extern void timer_irq_handler(void *frame);
+        timer_irq_handler(frame);
+        lapic_eoi();
+        scheduler_on_irq_exit();
+        return;
+    }
+
+    if (frame->vector == IPI_VECTOR_RESCHED) {
+        if (smp_scheduling_enabled()) {
+            cpu_local_this()->need_resched = 1;
+            lapic_eoi();
+            scheduler_on_irq_exit();
+        } else {
+            lapic_eoi();
+        }
+        return;
+    }
+
+    if (frame->vector == IPI_VECTOR_TLB) {
+        tlb_shootdown_handler();
+        lapic_eoi();
+        return;
     }
 
     if (frame->vector >= 32 && frame->vector <= 47) {
@@ -60,8 +97,12 @@ void isr_dispatch(struct interrupt_frame *frame)
         if (irq_handlers[irq]) {
             irq_handlers[irq](frame);
         }
-        pic_eoi(irq);
-        if (irq == 0) {
+        if (use_apic_eoi) {
+            lapic_eoi();
+        } else {
+            pic_eoi(irq);
+        }
+        if (irq == 0 && !use_apic_eoi) {
             scheduler_on_irq_exit();
         }
         return;
@@ -94,7 +135,10 @@ void interrupts_init(void)
     }
 
     for (i = 0; i < 48; i++) {
-        uint8_t ist = (i == 8) ? 1 : 0; /* double fault uses IST1 */
+        uint8_t ist = (i == 8) ? 1 : 0;
         idt_set_gate(i, (void *)stubs[i], ist, 0x8E);
     }
+    idt_set_gate(LAPIC_TIMER_VECTOR, (void *)isr48, 0, 0x8E);
+    idt_set_gate(IPI_VECTOR_RESCHED, (void *)isr240, 0, 0x8E);
+    idt_set_gate(IPI_VECTOR_TLB, (void *)isr241, 0, 0x8E);
 }

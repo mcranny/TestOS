@@ -25,7 +25,7 @@ boot_once() {
     screenshot="${log%.log}.ppm"
     cp "${vars_template}" "${vars}"
     qemu-system-x86_64 \
-        -machine q35 -m "${ram}" -nodefaults -vga none -device bochs-display \
+        -machine q35 -m "${ram}" -smp 4 -nodefaults -vga none -device bochs-display \
         -drive if=pflash,format=raw,readonly=on,file="${code}" \
         -drive if=pflash,format=raw,file="${vars}" \
         -drive file="${image}",format=raw,if=ide \
@@ -45,6 +45,16 @@ boot_once() {
     wait "${qemu_pid}" || status=$?
     rm -f "${vars}"
     if ! grep -q 'BOOT: TestOS ready' "${log}"; then
+        cat "${log}" >&2
+        return 1
+    fi
+    if ! grep -q 'AP online cpu=' "${log}"; then
+        echo "expected application processors to come online" >&2
+        cat "${log}" >&2
+        return 1
+    fi
+    if ! grep -q 'smp cpus_online=' "${log}"; then
+        echo "SMP bring-up banner missing" >&2
         cat "${log}" >&2
         return 1
     fi

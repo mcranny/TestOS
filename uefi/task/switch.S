@@ -1,21 +1,13 @@
 .section .text
 .global process_switch
 .global process_enter_user
+.extern sched_after_switch
 .type process_switch, @function
 .type process_enter_user, @function
 
 /* void process_switch(process_t *prev, process_t *next)
  * rdi = prev, rsi = next
- * Saves callee-saved regs + rsp into prev->kernel_rsp (offset 40),
- * loads next->kernel_rsp, switches CR3 from next->cr3 (offset 48).
- *
- * process_t layout (must match process.h):
- *  0 pid (u32)
- *  4 state (u32)
- *  8 name[32]
- * 40 kernel_rsp (u64)
- * 48 cr3 (u64)
- * ... trailing fields (incl. syscall_user_rsp) must not shift 40/48.
+ * Caller holds sched_lock with IRQs disabled.
  */
 process_switch:
     test %rdi, %rdi
@@ -35,6 +27,7 @@ process_switch:
     mov %rax, %cr3
 2:
     mov 40(%rsi), %rsp
+    call sched_after_switch
     pop %r15
     pop %r14
     pop %r13
@@ -45,18 +38,30 @@ process_switch:
 
 /* void process_enter_user(uint64_t entry, uint64_t user_stack)
  * rdi = entry, rsi = user_stack
- * Builds iretq frame for ring3.
+ *
+ * cpu_local_prepare_user ensures KERNEL_GS_BASE holds cpu_local even if a
+ * prior IRQ-from-user swapgs + context switch left it zero, then clears
+ * GS_BASE for ring 3. Keep IF clear until iretq.
  */
+.extern cpu_local_prepare_user
 process_enter_user:
-    mov $0x1B, %ax          /* USER_DATA_SEL */
+    cli
+    push %rdi
+    push %rsi
+    call cpu_local_prepare_user
+    pop %rsi
+    pop %rdi
+
+    mov $0x1B, %ax              /* USER_DATA_SEL */
     mov %ax, %ds
     mov %ax, %es
+    xor %eax, %eax
     mov %ax, %fs
     mov %ax, %gs
 
-    pushq $0x1B             /* SS */
-    pushq %rsi              /* RSP */
-    pushq $0x202            /* RFLAGS (IF set) */
-    pushq $0x23             /* CS = USER_CODE_SEL */
-    pushq %rdi              /* RIP */
+    pushq $0x1B                 /* SS */
+    pushq %rsi                  /* RSP */
+    pushq $0x202                /* RFLAGS (IF set on return to user) */
+    pushq $0x23                 /* CS = USER_CODE_SEL */
+    pushq %rdi                  /* RIP */
     iretq

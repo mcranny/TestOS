@@ -23,6 +23,16 @@ __attribute__((used, section(".limine_requests")))
 static volatile struct limine_kernel_address_request kernel_address_request = {
     .id = LIMINE_KERNEL_ADDRESS_REQUEST_ID
 };
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_smp_request smp_request = {
+    .id = LIMINE_SMP_REQUEST_ID,
+    .revision = 0,
+    .flags = 0
+};
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST_ID
+};
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end[] = {
     0xadc0e0531bb10d03ULL, 0x9572709f31764c62ULL
@@ -119,5 +129,7 @@ int boot_init(struct boot_info *out)
     out->kernel_size = (uint64_t)(__kernel_end - __kernel_start);
     out->memmap = memmap_request.response;
     out->framebuffer = fb;
+    out->smp = smp_request.response;
+    out->rsdp = rsdp_request.response ? rsdp_request.response->address : NULL;
     return 0;
 }

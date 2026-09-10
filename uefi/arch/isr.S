@@ -72,6 +72,20 @@ IRQ_STUB 44
 IRQ_STUB 45
 IRQ_STUB 46
 IRQ_STUB 47
+IRQ_STUB 48
+/* LAPIC timer uses vector 0x30 = 48 */
+
+.global isr240
+isr240:
+    pushq $0
+    pushq $0xF0
+    jmp isr_common
+
+.global isr241
+isr241:
+    pushq $0
+    pushq $0xF1
+    jmp isr_common
 
 .global isr_common
 .extern isr_dispatch
@@ -92,11 +106,24 @@ isr_common:
     pushq %r13
     pushq %r14
     pushq %r15
+
+    /* CS is at 144(%rsp): 15 GPRs * 8 + vector + error + rip */
+    mov 144(%rsp), %rax
+    test $3, %rax
+    jz 1f
+    swapgs
+1:
     mov $0x10, %ax          /* KERNEL_DATA_SEL */
     mov %ax, %ds
     mov %ax, %es
     mov %rsp, %rdi
     call isr_dispatch
+
+    mov 144(%rsp), %rax
+    test $3, %rax
+    jz 2f
+    swapgs
+2:
     popq %r15
     popq %r14
     popq %r13

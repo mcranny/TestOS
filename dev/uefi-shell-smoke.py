@@ -137,6 +137,7 @@ def run_boot(fresh_data: bool, commands: list[tuple[str, float]], backend: str =
     args = [
         str(QEMU),
         "-machine", "q35",
+        "-smp", os.environ.get("TESTOS_SMP", "4"),
         "-m", "512M",
         "-drive", f"if=pflash,format=raw,readonly=on,file={CODE}",
         "-drive", f"if=pflash,format=raw,file={VARS}",
@@ -169,7 +170,11 @@ def run_boot(fresh_data: bool, commands: list[tuple[str, float]], backend: str =
         if sock is None:
             raise RuntimeError("could not connect to qemu serial")
 
-        if not recv_until(sock, buf, b"/# ", 45.0):
+        if not recv_until(sock, buf, b"/# ", 90.0):
+            text = buf.decode("latin1", errors="replace")
+            OUT.write_text(text, encoding="utf-8")
+            print("--- serial on prompt timeout ---")
+            print(strip_ansi(text)[-5000:])
             raise RuntimeError("shell prompt not reached")
         for cmd, settle in commands:
             send_cmd(sock, buf, cmd, settle)

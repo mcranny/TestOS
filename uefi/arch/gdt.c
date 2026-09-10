@@ -1,5 +1,6 @@
 #include "arch/gdt.h"
 #include "arch/tss.h"
+#include "cpu/cpu_local.h"
 #include "platform.h"
 
 struct gdt_entry {
@@ -36,8 +37,8 @@ struct gdt_table {
     struct gdt_tss_entry tss;
 } __attribute__((packed));
 
-static struct gdt_table gdt;
-static struct gdt_ptr gdtr;
+static struct gdt_table gdt_tables[CPU_MAX];
+static struct gdt_ptr gdtrs[CPU_MAX];
 
 void gdt_load(const struct gdt_ptr *gdtr, uint16_t code_sel, uint16_t data_sel);
 
@@ -66,8 +67,8 @@ static void gdt_set_user_code(struct gdt_entry *e)
     e->limit_low = 0;
     e->base_low = 0;
     e->base_mid = 0;
-    e->access = 0xFA; /* present, DPL3, code, readable */
-    e->granularity = 0x20; /* long mode */
+    e->access = 0xFA;
+    e->granularity = 0x20;
     e->base_high = 0;
 }
 
@@ -76,7 +77,7 @@ static void gdt_set_user_data(struct gdt_entry *e)
     e->limit_low = 0;
     e->base_low = 0;
     e->base_mid = 0;
-    e->access = 0xF2; /* present, DPL3, data, writable */
+    e->access = 0xF2;
     e->granularity = 0x00;
     e->base_high = 0;
 }
@@ -93,25 +94,39 @@ static void gdt_set_tss(struct gdt_tss_entry *e, uint64_t base, uint32_t limit)
     e->reserved = 0;
 }
 
-void gdt_init(void)
+static void gdt_build(uint32_t cpu)
 {
-    struct tss64 *tss = tss_get();
-    uint8_t *p = (uint8_t *)&gdt;
+    struct gdt_table *gdt = &gdt_tables[cpu];
+    struct tss64 *tss = tss_get_for(cpu);
+    uint8_t *p = (uint8_t *)gdt;
     uint64_t i;
 
-    for (i = 0; i < sizeof(gdt); i++) {
+    for (i = 0; i < sizeof(*gdt); i++) {
         p[i] = 0;
     }
 
-    gdt_set_code(&gdt.code);
-    gdt_set_data(&gdt.data);
-    gdt_set_user_data(&gdt.user_data);
-    gdt_set_user_code(&gdt.user_code);
-    gdt_set_tss(&gdt.tss, (uint64_t)(uintptr_t)tss, (uint32_t)(sizeof(struct tss64) - 1));
+    gdt_set_code(&gdt->code);
+    gdt_set_data(&gdt->data);
+    gdt_set_user_data(&gdt->user_data);
+    gdt_set_user_code(&gdt->user_code);
+    gdt_set_tss(&gdt->tss, (uint64_t)(uintptr_t)tss, (uint32_t)(sizeof(struct tss64) - 1));
 
-    gdtr.limit = (uint16_t)(sizeof(gdt) - 1);
-    gdtr.base = (uint64_t)(uintptr_t)&gdt;
+    gdtrs[cpu].limit = (uint16_t)(sizeof(*gdt) - 1);
+    gdtrs[cpu].base = (uint64_t)(uintptr_t)gdt;
+}
 
-    gdt_load(&gdtr, GDT_KERNEL_CODE, GDT_KERNEL_DATA);
+void gdt_load_cpu(uint32_t cpu)
+{
+    if (cpu >= CPU_MAX) {
+        panic("gdt_load_cpu: bad cpu");
+    }
+    gdt_build(cpu);
+    gdt_load(&gdtrs[cpu], GDT_KERNEL_CODE, GDT_KERNEL_DATA);
     __asm__ volatile("ltr %0" : : "r"((uint16_t)GDT_TSS) : "memory");
+    cpu_local_install_gs(cpu);
+}
+
+void gdt_init_bsp(void)
+{
+    gdt_load_cpu(0);
 }

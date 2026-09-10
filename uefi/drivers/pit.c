@@ -37,5 +37,7 @@ uint64_t timer_ticks(void)
 
 uint64_t timer_hz(void)
 {
-    return hz;
+    extern uint32_t lapic_timer_hz(void);
+    uint32_t lapic_hz = lapic_timer_hz();
+    return lapic_hz ? lapic_hz : hz;
 }

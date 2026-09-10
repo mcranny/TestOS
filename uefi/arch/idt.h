@@ -16,6 +16,7 @@ struct interrupt_frame {
 };
 
 void idt_init(void);
+void idt_reload(void);
 void idt_set_gate(uint8_t vector, void *handler, uint8_t ist, uint8_t type_attr);
 
 #endif

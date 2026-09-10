@@ -191,7 +191,7 @@ void lapic_timer_ap_init(uint32_t hz)
     if (!lapic_mmio) {
         return;
     }
-    /* APs schedule via reschedule IPI from the BSP timer; keep local timer masked. */
+    /* APs park with IF clear; keep local timer masked. */
     lapic_write(LAPIC_TIMER_DIV, 0x3);
     lapic_write(LAPIC_LVT_TIMER, (1U << 16) | LAPIC_TIMER_VECTOR);
 }

@@ -43,7 +43,6 @@ void smp_ap_entry(struct limine_smp_info *info)
     lapic_ap_init();
     lapic_timer_ap_init(lapic_timer_hz());
 
-    /* Defer idle/runqueue setup until AP IRQs are enabled. */
     __atomic_add_fetch(&cpus_online, 1, __ATOMIC_SEQ_CST);
 
     msg[0] = 'A'; msg[1] = 'P'; msg[2] = ' ';
@@ -55,13 +54,8 @@ void smp_ap_entry(struct limine_smp_info *info)
     msg[16] = 0;
     console_puts(msg);
 
-    /* Wait for BSP bring-up, then park with IF clear. */
-    while (!__atomic_load_n(&smp_scheduling, __ATOMIC_ACQUIRE)) {
-        __asm__ volatile("pause");
-    }
-
+    /* Park with IF clear; BSP still owns all work for this release. */
     for (;;) {
-        irq_disable();
         __asm__ volatile("hlt");
     }
 }
@@ -131,8 +125,6 @@ void smp_start_aps(void)
     console_puts("/");
     console_write_hex64(expected);
     console_puts("\n");
-    /* Scheduling stays gated until smp_enable_scheduling() so APs do not
-     * take IRQs / TLB IPIs during the rest of BSP device bring-up. */
 }
 
 void smp_enable_scheduling(void)

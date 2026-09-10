@@ -4,9 +4,7 @@
 #include "mm/pmm.h"
 #include "arch/tss.h"
 #include "arch/io.h"
-#include "arch/apic.h"
 #include "cpu/cpu_local.h"
-#include "cpu/smp.h"
 #include "sync/spinlock.h"
 #include "drivers/console.h"
 #include "lib/string.h"
@@ -166,9 +164,8 @@ static void worker_b(void)
 
 void scheduler_kick_others(void)
 {
-    if (cpu_count() > 1 && smp_scheduling_enabled()) {
-        lapic_send_ipi_all_excluding_self(IPI_VECTOR_RESCHED);
-    }
+    /* APs are parked with IF clear; resched IPIs would not be handled. */
+    (void)0;
 }
 
 static void ready_enqueue(process_t *p)
